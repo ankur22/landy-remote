@@ -1,0 +1,71 @@
+{
+  "name": "jlr-remote",
+  "author": "MakeAwesomeHappen",
+  "version": "1.0.0",
+  "keywords": ["pebble-app"],
+  "private": true,
+  "dependencies": {},
+  "pebble": {
+    "displayName": "jlr-remote",
+    "uuid": "b9928f30-181a-4014-a026-91faeef04bf3",
+    "sdkVersion": "3",
+    "enableMultiJS": true,
+    "targetPlatforms": [
+      "aplite",
+      "basalt",
+      "chalk",
+      "diorite",
+      "emery",
+      "flint",
+      "gabbro"
+    ],
+    "watchapp": {
+      "watchface": false
+    },
+    "messageKeys": [
+      "CMD",
+      "MSG_TYPE",
+
+      "STATUS_LOCKED",
+      "STATUS_FUEL_PERC",
+      "STATUS_RANGE_MILES",
+      "STATUS_VEHICLE_NAME",
+      "STATUS_DOORS_OPEN",
+      "STATUS_WINDOWS_OPEN",
+      "STATUS_UPDATED_AGO_SEC",
+      "STATUS_IN_MOTION",
+
+      "CAP_LOCK",
+      "CAP_UNLOCK",
+      "CAP_HONK",
+      "CAP_REFRESH",
+      "CAP_REMOTE_START",
+
+      "TYRE_FL_KPA",
+      "TYRE_FR_KPA",
+      "TYRE_RL_KPA",
+      "TYRE_RR_KPA",
+      "SERVICE_KM",
+      "ADBLUE_KM",
+      "OIL_WARN",
+      "BRAKE_FLUID_WARN",
+      "COOLANT_WARN",
+
+      "CMD_ECHO",
+      "CMD_OUTCOME",
+      "CMD_MESSAGE",
+
+      "POS_HAS_FIX",
+      "POS_DISTANCE_M",
+      "POS_BEARING_DEG",
+      "POS_QUALITY",
+      "POS_AGE_SEC",
+      "POS_DAYS_SINCE_FIX",
+
+      "ERROR_MESSAGE"
+    ],
+    "resources": {
+      "media": []
+    }
+  }
+}
