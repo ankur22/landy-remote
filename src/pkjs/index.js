@@ -1,15 +1,16 @@
-// PebbleKit JS entry point -- milestone 3: the AppMessage bridge between the
-// on-watch C UI and the JLR client, driven by mock data only.
+// PebbleKit JS entry point -- AppMessage policy bridge between the on-watch C
+// UI and an interchangeable mock or real backend facade.
 //
 // USE_MOCK is the build-time switch the milestone brief asks for. Wiring
 // the real backend (src/pkjs/jlr.js, already built + tested in milestone 2)
 // is milestone 4's job -- flip this and give the real client a `getBundle`/
 // `getPosition`/`sendCommand` adapter shaped like MockClient's when that
 // milestone starts (see README "Toggling mock mode").
-var USE_MOCK = true;
+var USE_MOCK = false;
 
 var JLR = require('./jlr');
 var MOCK = require('./mock');
+var REAL = require('./real');
 var SELFTEST = require('./selftest');
 
 // ------------------------------------------------------------- CMD values
@@ -128,29 +129,64 @@ function sendError(message) {
   sendDict(dict, 'error');
 }
 
+function errorCode(err) {
+  return err && err.code ? String(err.code).toLowerCase() : '';
+}
+
+function userMessageForError(err, fallback) {
+  var code = errorCode(err);
+  if (code === 'not_configured') {
+    return 'Configure Landy Remote in phone settings.';
+  }
+  if (code === 'auth_expired') {
+    return 'Sign in again on your phone.';
+  }
+  if (code === 'vehicle_selection_required') {
+    return 'Select a vehicle in phone settings.';
+  }
+  if (code === 'no_vehicles') {
+    return 'No vehicle found on this account.';
+  }
+  if (code === 'pin_required') {
+    return 'PIN not configured for this command.';
+  }
+  if (code === 'capability_unavailable' || code === 'service_not_available') {
+    return 'Feature not available for this vehicle.';
+  }
+  if (code === 'motion_unknown' || code === 'motion_unsafe') {
+    return 'Cannot confirm you are stationary.';
+  }
+  return fallback;
+}
+
+function safetyLocked(bundle) {
+  return !bundle || !bundle.motion || bundle.motion.moving ||
+    bundle.motion.commandsAllowed !== true;
+}
+
 // ------------------------------------------------------------ CMD handlers
 
 function handleGetStatus(client) {
   client.getBundle(function (err, bundle) {
     if (err) {
-      sendError('Could not reach vehicle.');
+      sendError(userMessageForError(err, 'Could not reach vehicle.'));
       return;
     }
-    var safe = JLR.displaySafeStatus(bundle.status, bundle.motion);
     var dict = {};
     dict['MSG_TYPE'] = MSG_STATUS_UPDATE;
-    dict['STATUS_IN_MOTION'] = bundle.motion.moving ? 1 : 0;
+    dict['STATUS_IN_MOTION'] = safetyLocked(bundle) ? 1 : 0;
 
-    if (bundle.motion.moving) {
+    if (safetyLocked(bundle)) {
       // Per the safety rule: while moving, send NOTHING else. The watch
       // also independently blanks the screen on this flag, but not sending
       // the fields at all is defence in depth -- there is nothing sensitive
       // on the wire to leak even if something downstream misbehaves.
-      log('vehicle in motion (' + bundle.motion.reasons.join(', ') + ') -- sending lockdown status only');
+      log('safety lockdown -- sending status flag only');
       sendDict(dict, 'status (in-motion)');
       return;
     }
 
+    var safe = JLR.displaySafeStatus(bundle.status, bundle.motion);
     dict['STATUS_LOCKED'] = safe.DOOR_IS_ALL_DOORS_LOCKED === 'TRUE' ? 1 : 0;
     dict['STATUS_FUEL_PERC'] = toIntOr(safe.FUEL_LEVEL_PERC, -1);
     dict['STATUS_RANGE_MILES'] = toIntOr(safe.DISTANCE_TO_EMPTY_FUEL, -1);
@@ -185,10 +221,10 @@ function handleGetPosition(client, motionBlockedCb) {
   // to prevent while the vehicle might be in motion.
   client.getBundle(function (err, bundle) {
     if (err) {
-      sendError('Could not reach vehicle.');
+      sendError(userMessageForError(err, 'Could not reach vehicle.'));
       return;
     }
-    if (bundle.motion.moving) {
+    if (safetyLocked(bundle)) {
       var lockDict = {};
       lockDict['MSG_TYPE'] = MSG_POSITION_UPDATE;
       lockDict['STATUS_IN_MOTION'] = 1;
@@ -197,7 +233,7 @@ function handleGetPosition(client, motionBlockedCb) {
     }
     client.getPosition(function (err2, pos) {
       if (err2) {
-        sendError('Could not fetch position.');
+        sendError(userMessageForError(err2, 'Could not fetch position.'));
         return;
       }
       var dict = {};
@@ -232,26 +268,18 @@ function handleCommand(client, cmd) {
   // like it is moving (see jlr.js::motionState) -- the car's own speed counts
   // even when the phone is still, because someone else may be driving it.
   client.getBundle(function (motionErr, bundle) {
-    if (!motionErr && bundle && bundle.motion && !bundle.motion.commandsAllowed) {
-      log('refusing ' + serviceCode + ' -- ' + bundle.motion.reasons.join(', '));
+    if (motionErr || safetyLocked(bundle)) {
+      var explicitlyMoving = !motionErr && bundle && bundle.motion &&
+        bundle.motion.moving;
+      log('refusing ' + serviceCode + ' -- safety proof unavailable');
       var blocked = {};
       blocked['MSG_TYPE'] = MSG_CMD_RESULT;
       blocked['CMD_ECHO'] = cmd;
       blocked['CMD_OUTCOME'] = 5; // CMD_OUTCOME_BLOCKED_MOTION
-      blocked['CMD_MESSAGE'] = 'Not while the vehicle is moving.';
-      sendDict(blocked, 'command blocked (in motion)');
-      return;
-    }
-    // A failure to determine motion state is NOT a reason to proceed silently
-    // for the dangerous command; for unlock specifically, fail closed.
-    if (motionErr && serviceCode === 'RDU') {
-      log('refusing RDU -- could not confirm the vehicle is stationary');
-      var unsure = {};
-      unsure['MSG_TYPE'] = MSG_CMD_RESULT;
-      unsure['CMD_ECHO'] = cmd;
-      unsure['CMD_OUTCOME'] = 5;
-      unsure['CMD_MESSAGE'] = 'Cannot confirm the car is parked. Unlock not sent.';
-      sendDict(unsure, 'command blocked (motion unknown)');
+      blocked['CMD_MESSAGE'] = explicitlyMoving ?
+        'Not while the vehicle is moving.' :
+        'Cannot confirm you are stationary. Command not sent.';
+      sendDict(blocked, 'command blocked by safety gate');
       return;
     }
     prv_send_command(client, cmd, serviceCode);
@@ -265,7 +293,7 @@ function prv_send_command(client, cmd, serviceCode) {
     dict['CMD_ECHO'] = cmd;
     if (err) {
       dict['CMD_OUTCOME'] = 4; // transport/auth error, distinct from a car refusal
-      dict['CMD_MESSAGE'] = 'Could not reach vehicle.';
+      dict['CMD_MESSAGE'] = userMessageForError(err, 'Could not reach vehicle.');
     } else if (result.outcome === 'success') {
       dict['CMD_OUTCOME'] = 1;
       dict['CMD_MESSAGE'] = SUCCESS_MESSAGE[cmd] || 'Done.';
@@ -287,19 +315,10 @@ function prv_send_command(client, cmd, serviceCode) {
 }
 
 Pebble.addEventListener('ready', function () {
-  log('pkjs ready, USE_MOCK=' + USE_MOCK +
-    ', moving=' + MOCK.isMoving() + ', limitedCaps=' + MOCK.isLimitedCaps());
+  log('pkjs ready, backend=' + (USE_MOCK ? 'mock' : 'real'));
   SELFTEST.runSelfTests();
 
-  var client = USE_MOCK ? new MOCK.MockClient() : null;
-  if (!client) {
-    // Milestone 4's job: adapt src/pkjs/jlr.js's Client (login/getStatus/
-    // getCapabilities/getPosition/sendCommand) behind the same getBundle/
-    // getPosition/sendCommand(serviceCode, cb) surface MockClient exposes,
-    // so nothing above this line has to change.
-    log('USE_MOCK=false but no real client wired up yet -- this is milestone 4. Refusing to start.');
-    return;
-  }
+  var client = USE_MOCK ? new MOCK.MockClient() : new REAL.RealClient();
 
   Pebble.addEventListener('appmessage', function (e) {
     var cmd = e.payload['CMD'];
@@ -332,3 +351,13 @@ Pebble.addEventListener('ready', function () {
   // never left waiting on a request that raced pkjs's own startup.
   handleGetStatus(client);
 });
+
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = {
+    USE_MOCK: USE_MOCK,
+    handleGetStatus: handleGetStatus,
+    handleGetPosition: handleGetPosition,
+    handleCommand: handleCommand,
+    userMessageForError: userMessageForError
+  };
+}

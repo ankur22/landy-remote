@@ -9,9 +9,11 @@
 
 static VehicleState s_state;
 static PositionState s_position;
+static bool s_session_stationary_verified;
 
 static void prv_defaults(void) {
   memset(&s_state, 0, sizeof(s_state));
+  s_session_stationary_verified = false;
   s_state.valid = false;
   s_state.fuel_perc = -1;
   s_state.range_miles = -1;
@@ -62,6 +64,10 @@ PositionState *state_get_position(void) {
   return &s_position;
 }
 
+bool state_is_session_stationary_verified(void) {
+  return s_session_stationary_verified;
+}
+
 int state_ago_seconds(void) {
   if (!s_state.valid || s_state.ago_sec_at_receipt < 0) {
     return -1;
@@ -94,6 +100,7 @@ static bool prv_bool_or(DictionaryIterator *iter, uint32_t key, bool fallback) {
 
 void state_apply_status_update(DictionaryIterator *iter) {
   bool in_motion = prv_bool_or(iter, MESSAGE_KEY_STATUS_IN_MOTION, false);
+  s_session_stationary_verified = !in_motion;
   s_state.in_motion = in_motion;
   s_state.valid = true;
 
