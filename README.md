@@ -1,14 +1,21 @@
-# jlr-remote
+# Landy Remote
 
 A Pebble Time 2 (and broader PebbleOS) watchapp for controlling a Jaguar Land
 Rover InControl-connected vehicle from the wrist: lock/unlock, honk & flash,
 find-my-car, and a glanceable status card. Not affiliated with or endorsed by
 Jaguar Land Rover.
 
-**Current status: milestone 2.** This repo currently ships the PebbleKit JS
-(pkjs) API client only -- `src/pkjs/jlr.js` -- with no watch UI wired up yet
-(that's milestone 3). The C side is still the stock `pebble new-project`
-template.
+**Current status: milestone 5 (owner hardware validation ready).** The watch
+UI, AppMessage policy bridge, startup safety gate, injectable real-client
+adapter, and hosted phone configuration are wired together. Automated
+validation is deliberately fake-only: no JLR server or physical vehicle was
+contacted while implementing this milestone. Owner-led phone/watch validation
+remains outstanding.
+
+The production switch in `src/pkjs/index.js` selects `RealClient`. Set
+`USE_MOCK=true` only for explicit fixture-driven UI development. A static
+`pebble build` bundles JavaScript but does not execute the pkjs `ready`
+handler; installing or launching a real build does execute it.
 
 The full research trail this client is built from lives in the sibling
 `~/projects/pebble/` repo:
@@ -162,62 +169,36 @@ and plain JSON both 406 there). None of the BEV-only `PhevService` endpoints
 (preconditioning/chargeProfile, which want v5) are implemented -- this is a
 diesel Discovery, they're out of scope.
 
-## Testing
+## Offline verification
 
-### 1. Pure-logic + mocked-network unit tests (no credentials, no network)
+All automated Milestone 4 tests inject raw clients, geolocation, storage,
+clocks, timers, and AppMessage endpoints. They are structurally unable to
+construct the production client or reach JLR.
 
 ```sh
 node test/unit-test.js
+node test/real-client-test.js
+node test/bridge-test.js
+node test/startup-safety-test.js
+PATH="$HOME/.local/bin:$PATH" pebble build
 ```
 
-Covers `flattenStatus`, `serviceState`, `maskVin` directly, plus the full
-mocked network path for login -> connect -> `sendCommand`, asserting all
-three terminal outcomes (`success`, `declined`, `pending`) come back
-correctly from a canned response queue. **No real request is ever made by
-this test.**
+- `unit-test.js` covers pure helpers and canned-XHR protocol behavior.
+- `real-client-test.js` covers the phone-motion matrix, explicit vehicle
+  selection, sequential bundle reads, short-lived in-memory position reuse,
+  find-my-car math/freshness, PIN and capability gates, and command outcome
+  fidelity.
+- `bridge-test.js` captures fake `Pebble.sendAppMessage()` dictionaries and
+  proves moving/unknown responses are data-free and every command fails
+  closed when safety lookup fails.
+- `startup-safety-test.js` proves persisted C state cannot establish
+  current-session stationary proof and all three status-window buttons stay
+  inert until fresh evidence arrives.
+- `pebble build` statically compiles all configured targets. It does not
+  execute pkjs or make a backend request.
 
-### 2. In-emulator self-test (no credentials, no network)
-
-```sh
-pebble build
-pebble install --emulator emery --logs
-```
-
-`src/pkjs/index.js` runs the same pure-logic checks inside the actual pkjs
-runtime on `ready`, to catch anything that only breaks in that JS engine
-(there is real precedent for this in this SDK -- see the UTF-8-as-Latin-1
-mojibake gotcha in the sibling `econfeed` project). Expect:
-
-```
-JLR: pkjs ready
-JLR: [PASS] flattenStatus: ...
-...
-JLR: self-test summary: 9/9 passed
-```
-
-Verified 2026-07-27 against SDK 4.17 / pebble-tool 5.0.39 on the emery
-emulator -- all 9 checks passed.
-
-### 3. Live read-only smoke test against the real backend (needs real credentials)
-
-```sh
-node test/live-smoke-test.js
-```
-
-This runs the *actual* `src/pkjs/jlr.js` module (not a reimplementation)
-under plain Node, with a small XMLHttpRequest/localStorage polyfill, against
-the real JLR backend: login -> connect -> list vehicles -> capabilities ->
-status -> position. **Read-only** -- it never calls `sendCommand`/`lock`/
-`unlock`/`honkFlash`. Credentials come from environment variables only; they
-are never logged, hardcoded, or committed.
-
-**This was not run as part of building this milestone** -- no InControl
-credentials were available in this environment. Run it yourself with your
-real credentials to confirm the live contract still matches
-`jlr-remote-research.md` before building on top of it. Do not repeat this
-call speculatively with wrong credentials -- the research doc documents a
-WAF rule that appears to react to repeated password grants against an
-unknown account.
+Do not include `test/live-smoke-test.js`, `pebble install`, an emulator
+launch, or screenshots in routine automated verification.
 
 ### What must NEVER be tested against the real vehicle
 
@@ -230,51 +211,65 @@ honk & flash is audible/visible outside). Exercise the command path only via
 ## Project layout
 
 ```
-src/c/                    stock watchapp template (C) -- unchanged so far, milestone 3 work
-src/pkjs/jlr.js           the JLR API client (this milestone's deliverable)
-src/pkjs/index.js         pkjs entry point; currently just self-tests jlr.js on 'ready'
-test/unit-test.js         mocked-network + pure-logic unit tests (node test/unit-test.js)
-test/live-smoke-test.js   real-backend read-only smoke test (Keychain or hidden prompt)
+src/c/                    watch UI, persisted state, and current-session safety gate
+src/pkjs/jlr.js           low-level JLR API client
+src/pkjs/real.js          injectable safety-first real-client facade
+src/pkjs/mock.js          fixture-only facade for explicit offline UI work
+src/pkjs/index.js         AppMessage policy bridge and real/mock selection
+test/unit-test.js         canned-XHR + pure-logic tests
+test/real-client-test.js  fake-only real adapter contract tests
+test/bridge-test.js       fake AppMessage integration tests
+test/startup-safety-test.js static startup-lockdown invariants
+test/live-smoke-test.js   owner-only read-only diagnostic; excluded from validation
 package.json              project metadata (UUID, platforms, resources, message keys)
 wscript                   build rules -- no need to edit
 ```
 
-## Building & running the watchapp shell
+## Building and owner hardware verification
 
 ```sh
 export PATH="$HOME/.local/bin:$PATH"   # pebble-tool lives in ~/.local/bin
 pebble build                           # build for all targetPlatforms
-pebble install --emulator emery --logs # install + stream watch/pkjs logs
-pebble install --phone <ip>            # install to a paired phone over LAN
 ```
 
-If `pebble install --emulator ...` times out on `WatchVersion` the very first
-time, that's a known first-boot flake -- just re-run it. If a stale
-`qemu-pebble`/`pypkjs` process is left over from a previous session and the
-same timeout happens again, `pkill -f qemu-pebble; pkill -f pypkjs` and retry.
+The owner should install only as a deliberate hardware-validation step.
+Launching a real build runs pkjs and may attempt backend reads when valid
+tokens already exist. Before testing, confirm the selected account/vehicle,
+start stationary, and expect a full lockdown whenever phone speed is absent,
+invalid, stale, denied, or at/above 5 km/h. Verify status and find-my-car
+reads before opting into any PIN-backed command. Never automate physical
+commands.
 
-## Where this differs from the research docs / open questions for milestone 3
+## Phone setup
 
-Nothing found in building this milestone contradicts
-`jlr-remote-research.md` or `jlr-vehicle-capabilities.md` -- the endpoint
-map, media types, and gating logic were implemented exactly as documented.
-The one thing this milestone could **not** verify is whether the documented
-contract still holds against Ankur's real account today (`test/live-smoke-
-test.js` is ready for that, but wasn't run here -- see above). Everything
-else (capability gating, status flattening/`LAST_UPDATED_TIME` fallback, the
-three-outcome command polling) was verified either against synthetic
-fixtures shaped like the real probe output, or against a mocked network in
-`test/unit-test.js`.
+The Pebble app's settings button opens the static configuration page at
+<https://ankur22.github.io/landy-remote/config/>. The page is hosted as plain
+HTML by GitHub Pages and does not submit data to a web server. It returns the
+form to Pebble through the standard `pebblejs://close#...` URL fragment.
 
-Known gaps intentionally left for milestone 3+:
-- No watch-side UI, no AppMessage protocol between C and pkjs yet.
-- No PIN storage/confirm-dialog design (the research doc's default: store
-  the PIN locally, confirm on-watch before unlock) -- `sendCommand` accepts
-  a PIN parameter but this layer has no opinion on where it comes from.
-- No config page for email/password/PIN entry (the research doc's plan: a
-  static page on GitHub Pages, closing back into the app via
-  `pebblejs://close#...`).
-- Find-my-car math (haversine distance + bearing) is not part of this
-  client -- `getPosition()` returns the raw
-  `{latitude, longitude, heading, speed, positionQuality, timestamp}`
-  payload for a future consumer to do that with.
+1. Enter the email and password for the InControl account.
+2. Leave VIN blank for a single-vehicle account. For a multi-vehicle account,
+   enter the 17-character VIN to select explicitly.
+3. Leave **Store vehicle PIN on this phone** off for read-only testing.
+4. Save. PebbleKit performs sign-in, stores renewable tokens (never the
+   password), verifies the selected vehicle, and refreshes the watch.
+
+PIN storage is optional and off by default. Enabling it shows the warning:
+**Anyone who can unlock your phone can unlock your car.** The PIN is stored in
+PebbleKit local storage because JLR commands require it; the watch still
+requires confirmation before unlock. The configuration page also provides a
+sign-out action that clears account tokens, email, selected VIN, and PIN.
+
+## Milestone 5 limitations
+
+- Passwords are never persisted. Rejected refresh authentication reports
+  that sign-in is required again.
+- A sole account vehicle is selected automatically. Multi-vehicle accounts
+  select by entering a VIN in phone settings.
+- PIN-required commands remain locally blocked when PIN storage is off; VHS
+  uses an empty PIN.
+- Pebble Core iOS may return `coords.speed=null`. This is intentionally motion
+  unknown: cached data stays hidden and every command remains blocked.
+- Real backend reads, authentication, physical actuation, and phone/watch UX
+  have not been validated by automation. That evidence belongs to deliberate
+  owner hardware testing.

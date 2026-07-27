@@ -65,23 +65,29 @@ static CapState prv_up_target_cap(void) {
 
 static void prv_refresh(void) {
   VehicleState *st = state_get();
-  bool motion = st->valid && st->in_motion;
+  bool lockdown = !state_is_session_stationary_verified() || st->in_motion;
 
-  layer_set_hidden(text_layer_get_layer(s_vehicle_name_layer), motion);
-  layer_set_hidden(text_layer_get_layer(s_lock_state_layer), motion);
-  layer_set_hidden(text_layer_get_layer(s_fuel_range_layer), motion);
-  layer_set_hidden(text_layer_get_layer(s_alert_layer), motion || (!st->doors_open && !st->windows_open));
-  layer_set_hidden(text_layer_get_layer(s_freshness_layer), motion);
-  layer_set_hidden(s_divider_layer, motion);
-  layer_set_hidden(text_layer_get_layer(s_select_label_layer), motion);
-  layer_set_hidden(text_layer_get_layer(s_down_label_layer), motion);
-  layer_set_hidden(text_layer_get_layer(s_motion_layer), !motion);
-  layer_set_hidden(text_layer_get_layer(s_motion_hint_layer), !motion);
+  layer_set_hidden(text_layer_get_layer(s_vehicle_name_layer), lockdown);
+  layer_set_hidden(text_layer_get_layer(s_lock_state_layer), lockdown);
+  layer_set_hidden(text_layer_get_layer(s_fuel_range_layer), lockdown);
+  layer_set_hidden(text_layer_get_layer(s_alert_layer), lockdown || (!st->doors_open && !st->windows_open));
+  layer_set_hidden(text_layer_get_layer(s_freshness_layer), lockdown);
+  layer_set_hidden(s_divider_layer, lockdown);
+  layer_set_hidden(text_layer_get_layer(s_select_label_layer), lockdown);
+  layer_set_hidden(text_layer_get_layer(s_down_label_layer), lockdown);
+  layer_set_hidden(text_layer_get_layer(s_motion_layer), !lockdown);
+  layer_set_hidden(text_layer_get_layer(s_motion_hint_layer), !lockdown);
 
-  bool up_hidden = motion || prv_up_target_cap() == CAP_NOT_CAPABLE;
+  bool up_hidden = lockdown || prv_up_target_cap() == CAP_NOT_CAPABLE;
   layer_set_hidden(text_layer_get_layer(s_up_label_layer), up_hidden);
 
-  if (motion) {
+  if (lockdown) {
+    bool verified = state_is_session_stationary_verified();
+    text_layer_set_text(s_motion_layer,
+      verified ? "Vehicle in motion" : "Checking safety");
+    text_layer_set_text(s_motion_hint_layer,
+      verified ? "Remote features return when the engine is off."
+               : "Remote features stay locked until your phone confirms you are stationary.");
     return; // nothing else to draw -- see the safety rule in the header
   }
 
@@ -129,7 +135,7 @@ static void prv_refresh(void) {
 
 static void prv_up_click_handler(ClickRecognizerRef recognizer, void *context) {
   VehicleState *st = state_get();
-  if (st->in_motion) {
+  if (!state_is_session_stationary_verified() || state_get()->in_motion) {
     return; // commands refused outright while the vehicle may be moving
   }
   CapState cap = prv_up_target_cap();
@@ -150,14 +156,14 @@ static void prv_up_click_handler(ClickRecognizerRef recognizer, void *context) {
 }
 
 static void prv_select_click_handler(ClickRecognizerRef recognizer, void *context) {
-  if (state_get()->in_motion) {
+  if (!state_is_session_stationary_verified() || state_get()->in_motion) {
     return;
   }
   more_menu_window_push();
 }
 
 static void prv_down_click_handler(ClickRecognizerRef recognizer, void *context) {
-  if (state_get()->in_motion) {
+  if (!state_is_session_stationary_verified() || state_get()->in_motion) {
     return;
   }
   find_car_window_push();
@@ -266,8 +272,8 @@ void status_window_push(void) {
   comm_set_status_callback(prv_on_status_updated);
   window_stack_push(s_window, true);
 
-  // Cache-then-refresh: state_init() already loaded any persisted cache
-  // before this window was pushed, so prv_refresh() above painted it
-  // immediately. Now ask for fresh data.
+  // Cache-then-refresh: state_init() may have loaded persisted data, but
+  // prv_refresh() keeps it hidden and all actions inert until this session
+  // receives a fresh stationary status.
   comm_send_cmd(CMD_GET_STATUS);
 }

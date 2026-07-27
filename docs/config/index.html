@@ -1,0 +1,221 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>Landy Remote setup</title>
+  <style>
+    :root {
+      color: #17211b;
+      background: #edf0e9;
+      font: 16px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background:
+        linear-gradient(145deg, rgba(255,255,255,.82), rgba(237,240,233,.65)),
+        #edf0e9;
+    }
+    main {
+      width: min(100%, 34rem);
+      margin: 0 auto;
+      padding: 2.25rem 1.1rem 3rem;
+    }
+    .eyebrow {
+      margin: 0 0 .45rem;
+      color: #58705f;
+      font-size: .75rem;
+      font-weight: 750;
+      letter-spacing: .14em;
+      text-transform: uppercase;
+    }
+    h1 {
+      margin: 0;
+      font-family: Georgia, "Times New Roman", serif;
+      font-size: clamp(2.25rem, 9vw, 3.35rem);
+      font-weight: 500;
+      line-height: .98;
+      letter-spacing: -.045em;
+    }
+    .intro {
+      max-width: 29rem;
+      margin: 1rem 0 1.5rem;
+      color: #4c5b50;
+    }
+    .card {
+      padding: 1.25rem;
+      border: 1px solid #cbd2c8;
+      border-radius: 1rem;
+      background: rgba(255,255,255,.88);
+      box-shadow: 0 1rem 2.7rem rgba(29,45,34,.08);
+    }
+    label {
+      display: block;
+      margin: 0 0 1rem;
+      font-size: .88rem;
+      font-weight: 700;
+    }
+    input[type="email"], input[type="password"], input[type="text"] {
+      display: block;
+      width: 100%;
+      margin-top: .38rem;
+      padding: .83rem .9rem;
+      border: 1px solid #aeb9b0;
+      border-radius: .55rem;
+      background: #fff;
+      color: #17211b;
+      font: inherit;
+    }
+    input:focus {
+      outline: 3px solid rgba(67,103,76,.2);
+      border-color: #43674c;
+    }
+    .hint {
+      display: block;
+      margin-top: .35rem;
+      color: #66746a;
+      font-size: .78rem;
+      font-weight: 450;
+    }
+    .check {
+      display: grid;
+      grid-template-columns: 1.2rem 1fr;
+      gap: .55rem;
+      align-items: start;
+      margin: 1.15rem 0 .65rem;
+      padding-top: 1.05rem;
+      border-top: 1px solid #dde2dc;
+    }
+    .check input {
+      width: 1.1rem;
+      height: 1.1rem;
+      margin: .12rem 0 0;
+      accent-color: #315d3b;
+    }
+    .warning {
+      margin: .65rem 0 1rem;
+      padding: .75rem .85rem;
+      border-left: .25rem solid #b65f28;
+      background: #fff4eb;
+      color: #6d3719;
+      font-size: .84rem;
+    }
+    .actions {
+      display: grid;
+      gap: .7rem;
+      margin-top: 1.2rem;
+    }
+    button {
+      min-height: 3rem;
+      border: 0;
+      border-radius: .6rem;
+      font: inherit;
+      font-weight: 750;
+      cursor: pointer;
+    }
+    .primary { background: #244e31; color: #fff; }
+    .secondary { background: #e7ebe6; color: #334239; }
+    footer {
+      margin-top: 1.25rem;
+      color: #667169;
+      font-size: .75rem;
+    }
+    [hidden] { display: none !important; }
+  </style>
+</head>
+<body>
+  <main>
+    <p class="eyebrow">Pebble companion setup</p>
+    <h1>Landy Remote</h1>
+    <p class="intro">
+      Connect your Jaguar Land Rover InControl account. Your password goes
+      directly back to the Pebble app for sign-in and is never saved by this page.
+    </p>
+
+    <form class="card" id="config-form">
+      <label>
+        InControl email
+        <input id="email" type="email" autocomplete="username" required>
+      </label>
+      <label>
+        InControl password
+        <input id="password" type="password" autocomplete="current-password" required>
+        <span class="hint">Used once to obtain renewable account tokens; never stored.</span>
+      </label>
+      <label>
+        Vehicle VIN <span class="hint">(only needed for multi-vehicle accounts)</span>
+        <input id="vin" type="text" autocomplete="off" autocapitalize="characters"
+          maxlength="17" pattern="[A-Za-z0-9]{17}">
+      </label>
+
+      <label class="check">
+        <input id="store-pin" type="checkbox">
+        <span>
+          Store vehicle PIN on this phone
+          <span class="hint">Required for lock, unlock, honk &amp; flash, and remote start.</span>
+        </span>
+      </label>
+      <div id="pin-area" hidden>
+        <p class="warning"><strong>Anyone who can unlock your phone can unlock your car.</strong></p>
+        <label>
+          Four digit vehicle PIN
+          <input id="pin" type="password" inputmode="numeric" autocomplete="off"
+            minlength="4" maxlength="4" pattern="[0-9]{4}">
+        </label>
+      </div>
+
+      <div class="actions">
+        <button class="primary" type="submit">Save and sign in</button>
+        <button class="secondary" id="logout" type="button">Sign out and clear saved data</button>
+      </div>
+    </form>
+
+    <footer>
+      Unofficial software, not affiliated with or endorsed by Jaguar Land Rover.
+      Remote actions affect a real vehicle. You are responsible for account,
+      device, vehicle, and surroundings security and for using the app safely.
+    </footer>
+  </main>
+
+  <script>
+    (function () {
+      'use strict';
+      var form = document.getElementById('config-form');
+      var storePin = document.getElementById('store-pin');
+      var pinArea = document.getElementById('pin-area');
+      var pin = document.getElementById('pin');
+
+      function closeWith(payload) {
+        window.location.href = 'pebblejs://close#' +
+          encodeURIComponent(JSON.stringify(payload));
+      }
+
+      function updatePin() {
+        pinArea.hidden = !storePin.checked;
+        pin.required = storePin.checked;
+        if (!storePin.checked) pin.value = '';
+      }
+
+      storePin.addEventListener('change', updatePin);
+      form.addEventListener('submit', function (event) {
+        event.preventDefault();
+        closeWith({
+          action: 'save',
+          email: document.getElementById('email').value,
+          password: document.getElementById('password').value,
+          vin: document.getElementById('vin').value,
+          storePin: storePin.checked,
+          pin: storePin.checked ? pin.value : ''
+        });
+      });
+      document.getElementById('logout').addEventListener('click', function () {
+        closeWith({ action: 'logout' });
+      });
+      updatePin();
+    }());
+  </script>
+</body>
+</html>

@@ -314,8 +314,6 @@
   // stack, never written to localStorage.
   JlrClient.prototype.login = function (email, password, callback) {
     var self = this;
-    this._email = email;
-    lsSet(LS_EMAIL, email);
     this._tokenRequest(
       { grant_type: 'password', username: email, password: password },
       'password grant',
@@ -327,6 +325,11 @@
         // Any fresh login invalidates any previously-cached user id (in case
         // this is actually a different account logging in on the same
         // install) -- re-resolve it lazily via connect()/getUserId().
+        self._email = email;
+        self._userId = null;
+        self._deviceRegistered = false;
+        lsSet(LS_EMAIL, email);
+        lsSet(LS_USER_ID, null);
         callback(null);
       }
     );
@@ -926,12 +929,14 @@
     this._refreshToken = null;
     this._expiresAt = 0;
     this._userId = null;
+    this._email = null;
     this._deviceRegistered = false;
     lsSet(LS_ACCESS, null);
     lsSet(LS_AUTHZ, null);
     lsSet(LS_REFRESH, null);
     lsSet(LS_EXPIRES_AT, null);
     lsSet(LS_USER_ID, null);
+    lsSet(LS_EMAIL, null);
   };
 
   // ------------------------------------------------- motion gating / safety

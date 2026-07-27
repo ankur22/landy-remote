@@ -86,6 +86,11 @@ void state_init(void);
 VehicleState *state_get(void);
 PositionState *state_get_position(void);
 
+// True only after this process has received a fresh status update proving the
+// phone is stationary. This value is deliberately not part of VehicleState,
+// so persisted cache data can never unlock a later app session.
+bool state_is_session_stationary_verified(void);
+
 // Returns the live "updated N seconds ago" value, accounting for elapsed
 // wall-clock time since the value was received.
 int state_ago_seconds(void);
