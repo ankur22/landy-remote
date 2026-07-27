@@ -1,15 +1,16 @@
-# jlr-remote
+# Landy Remote
 
 A Pebble Time 2 (and broader PebbleOS) watchapp for controlling a Jaguar Land
 Rover InControl-connected vehicle from the wrist: lock/unlock, honk & flash,
 find-my-car, and a glanceable status card. Not affiliated with or endorsed by
 Jaguar Land Rover.
 
-**Current status: milestone 4 (offline implementation complete).** The watch
-UI, AppMessage policy bridge, startup safety gate, and injectable real-client
-adapter are wired together. Automated validation is deliberately fake-only:
-no JLR server or physical vehicle was contacted while implementing this
-milestone. Owner-led phone/watch validation remains outstanding.
+**Current status: milestone 5 (owner hardware validation ready).** The watch
+UI, AppMessage policy bridge, startup safety gate, injectable real-client
+adapter, and hosted phone configuration are wired together. Automated
+validation is deliberately fake-only: no JLR server or physical vehicle was
+contacted while implementing this milestone. Owner-led phone/watch validation
+remains outstanding.
 
 The production switch in `src/pkjs/index.js` selects `RealClient`. Set
 `USE_MOCK=true` only for explicit fixture-driven UI development. A static
@@ -239,17 +240,34 @@ invalid, stale, denied, or at/above 5 km/h. Verify status and find-my-car
 reads before opting into any PIN-backed command. Never automate physical
 commands.
 
-## Milestone 4 limitations
+## Phone setup
 
-- The hosted configuration/sign-in page is Milestone 5. A fresh install has
-  no supported password-entry path and reports configuration required.
+The Pebble app's settings button opens the static configuration page at
+<https://ankur22.github.io/landy-remote/config/>. The page is hosted as plain
+HTML by GitHub Pages and does not submit data to a web server. It returns the
+form to Pebble through the standard `pebblejs://close#...` URL fragment.
+
+1. Enter the email and password for the InControl account.
+2. Leave VIN blank for a single-vehicle account. For a multi-vehicle account,
+   enter the 17-character VIN to select explicitly.
+3. Leave **Store vehicle PIN on this phone** off for read-only testing.
+4. Save. PebbleKit performs sign-in, stores renewable tokens (never the
+   password), verifies the selected vehicle, and refreshes the watch.
+
+PIN storage is optional and off by default. Enabling it shows the warning:
+**Anyone who can unlock your phone can unlock your car.** The PIN is stored in
+PebbleKit local storage because JLR commands require it; the watch still
+requires confirmation before unlock. The configuration page also provides a
+sign-out action that clears account tokens, email, selected VIN, and PIN.
+
+## Milestone 5 limitations
+
 - Passwords are never persisted. Rejected refresh authentication reports
   that sign-in is required again.
-- A sole account vehicle is selected automatically. Multiple vehicles remain
-  blocked until Milestone 5 supplies explicit selection.
-- PIN storage/opt-in UI and its disclosure are Milestone 5. PIN-required
-  commands remain locally blocked when no PIN is configured; VHS uses an
-  empty PIN.
+- A sole account vehicle is selected automatically. Multi-vehicle accounts
+  select by entering a VIN in phone settings.
+- PIN-required commands remain locally blocked when PIN storage is off; VHS
+  uses an empty PIN.
 - Pebble Core iOS may return `coords.speed=null`. This is intentionally motion
   unknown: cached data stays hidden and every command remains blocked.
 - Real backend reads, authentication, physical actuation, and phone/watch UX

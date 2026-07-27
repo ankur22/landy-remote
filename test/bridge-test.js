@@ -12,7 +12,8 @@ global.Pebble = {
   sendAppMessage: function (dict, success) {
     sent.push(dict);
     if (success) success();
-  }
+  },
+  openURL: function () {}
 };
 
 var bridge = require('../src/pkjs/index');
@@ -76,6 +77,10 @@ assert.strictEqual(
   false,
   'production bridge must select the real adapter'
 );
+assert.strictEqual(typeof listeners.showConfiguration, 'function',
+  'production bridge must register the phone configuration page');
+assert.strictEqual(typeof listeners.webviewclosed, 'function',
+  'production bridge must handle configuration responses');
 
 reset();
 bridge.handleGetStatus(bundleClient({

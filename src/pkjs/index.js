@@ -11,7 +11,18 @@ var USE_MOCK = false;
 var JLR = require('./jlr');
 var MOCK = require('./mock');
 var REAL = require('./real');
+var CONFIG = require('./config');
 var SELFTEST = require('./selftest');
+
+var rawClient = USE_MOCK ? null : new JLR.Client();
+var activeClient = USE_MOCK ? new MOCK.MockClient() :
+  new REAL.RealClient({
+    rawClient: rawClient,
+    configured: rawClient.isLoggedIn()
+  });
+var configController = USE_MOCK ? null : CONFIG.create({
+  rawClient: rawClient
+});
 
 // ------------------------------------------------------------- CMD values
 // Must match the CMD enum in src/c/comm.h exactly.
@@ -147,6 +158,19 @@ function userMessageForError(err, fallback) {
   if (code === 'no_vehicles') {
     return 'No vehicle found on this account.';
   }
+  if (code === 'vehicle_not_found') {
+    return 'VIN not found on this account.';
+  }
+  if (code === 'credentials_required' || code === 'login_failed') {
+    return 'Sign-in failed. Check phone settings.';
+  }
+  if (code === 'invalid_pin') {
+    return 'PIN must be four digits.';
+  }
+  if (code === 'vehicle_lookup_failed' || code === 'storage_failure' ||
+      code === 'invalid_configuration') {
+    return 'Could not save phone settings.';
+  }
   if (code === 'pin_required') {
     return 'PIN not configured for this command.';
   }
@@ -157,6 +181,37 @@ function userMessageForError(err, fallback) {
     return 'Cannot confirm you are stationary.';
   }
   return fallback;
+}
+
+function resetRealClient() {
+  activeClient = new REAL.RealClient({
+    rawClient: rawClient,
+    configured: rawClient.isLoggedIn()
+  });
+}
+
+if (!USE_MOCK) {
+  Pebble.addEventListener('showConfiguration', function () {
+    log('opening phone configuration');
+    Pebble.openURL(CONFIG.CONFIG_URL);
+  });
+
+  Pebble.addEventListener('webviewclosed', function (event) {
+    configController.handleResponse(event && event.response, function (err, result) {
+      if (err) {
+        sendError(userMessageForError(err, 'Could not save phone settings.'));
+        return;
+      }
+      if (!result || result.action === 'cancel') return;
+      resetRealClient();
+      if (result.action === 'logout') {
+        sendError('Signed out. Configure in phone settings.');
+        return;
+      }
+      log('configuration saved for selected vehicle');
+      handleGetStatus(activeClient);
+    });
+  });
 }
 
 function safetyLocked(bundle) {
@@ -318,8 +373,6 @@ Pebble.addEventListener('ready', function () {
   log('pkjs ready, backend=' + (USE_MOCK ? 'mock' : 'real'));
   SELFTEST.runSelfTests();
 
-  var client = USE_MOCK ? new MOCK.MockClient() : new REAL.RealClient();
-
   Pebble.addEventListener('appmessage', function (e) {
     var cmd = e.payload['CMD'];
     if (cmd === undefined || cmd === null) {
@@ -328,17 +381,17 @@ Pebble.addEventListener('ready', function () {
     log('received CMD=' + cmd);
     switch (cmd) {
       case CMD_GET_STATUS:
-        handleGetStatus(client);
+        handleGetStatus(activeClient);
         break;
       case CMD_LOCK:
       case CMD_UNLOCK:
       case CMD_HONK:
       case CMD_REFRESH:
       case CMD_REMOTE_START:
-        handleCommand(client, cmd);
+        handleCommand(activeClient, cmd);
         break;
       case CMD_GET_POSITION:
-        handleGetPosition(client);
+        handleGetPosition(activeClient);
         break;
       default:
         log('unrecognised CMD ' + cmd);
@@ -349,7 +402,7 @@ Pebble.addEventListener('ready', function () {
   // app's window (and its own CMD_GET_STATUS request) loaded before pkjs
   // finished initialising -- belt and braces so the very first launch is
   // never left waiting on a request that raced pkjs's own startup.
-  handleGetStatus(client);
+  handleGetStatus(activeClient);
 });
 
 if (typeof module !== 'undefined' && module.exports) {

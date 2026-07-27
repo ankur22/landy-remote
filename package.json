@@ -1,18 +1,19 @@
 {
-  "name": "jlr-remote",
+  "name": "landy-remote",
   "author": "MakeAwesomeHappen",
   "version": "1.0.0",
   "keywords": ["pebble-app"],
   "private": true,
   "scripts": {
-    "test": "node test/unit-test.js && node test/real-client-test.js && node test/bridge-test.js && node test/startup-safety-test.js",
+    "test": "node test/unit-test.js && node test/real-client-test.js && node test/bridge-test.js && node test/startup-safety-test.js && node test/config-test.js && node test/config-page-test.js",
     "test:real": "node test/real-client-test.js",
     "test:bridge": "node test/bridge-test.js",
-    "test:startup": "node test/startup-safety-test.js"
+    "test:startup": "node test/startup-safety-test.js",
+    "test:config": "node test/config-test.js && node test/config-page-test.js"
   },
   "dependencies": {},
   "pebble": {
-    "displayName": "jlr-remote",
+    "displayName": "Landy Remote",
     "uuid": "b9928f30-181a-4014-a026-91faeef04bf3",
     "sdkVersion": "3",
     "enableMultiJS": true,
