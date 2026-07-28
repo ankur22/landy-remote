@@ -97,6 +97,14 @@
   var LS_EMAIL = 'jlr_email';
   var LS_CAPS_PREFIX = 'jlr_caps_';           // + vin -> cached capability map
   var LS_CAPS_AT_PREFIX = 'jlr_caps_at_';     // + vin -> epoch ms of that cache
+  // Index of every VIN we have written a caps cache entry for. This exists
+  // purely so logout() can find and delete them: those entries carry the VIN
+  // in the KEY NAME and the model/year/fuel type in the value, so leaving them
+  // behind would contradict "Sign out and clear saved data" and leave a
+  // previous user's vehicle identifiable. We keep an explicit index rather
+  // than enumerating localStorage because PebbleKit JS does not reliably
+  // expose length/key(i).
+  var LS_CAPS_INDEX = 'jlr_caps_index';       // JSON array of VINs
 
   var CAPS_TTL_MS = 24 * 60 * 60 * 1000; // attributes/capabilities effectively never change
   var TOKEN_REFRESH_SKEW_MS = 5 * 60 * 1000; // refresh 5 min before real expiry
@@ -122,6 +130,38 @@
     } else {
       localStorage.setItem(key, value);
     }
+  }
+
+  // --- caps-cache index (see LS_CAPS_INDEX) ---
+  function capsIndexRead() {
+    var raw = lsGet(LS_CAPS_INDEX);
+    if (!raw) return [];
+    try {
+      var parsed = JSON.parse(raw);
+      return Object.prototype.toString.call(parsed) === '[object Array]' ? parsed : [];
+    } catch (e) {
+      return [];   // corrupt index -> treat as empty, it is only a delete hint
+    }
+  }
+
+  function capsIndexAdd(vin) {
+    if (!vin) return;
+    var vins = capsIndexRead();
+    for (var i = 0; i < vins.length; i++) {
+      if (vins[i] === vin) return;
+    }
+    vins.push(vin);
+    lsSet(LS_CAPS_INDEX, JSON.stringify(vins));
+  }
+
+  // Delete every caps cache entry we know about, plus the index itself.
+  function capsCacheClear() {
+    var vins = capsIndexRead();
+    for (var i = 0; i < vins.length; i++) {
+      lsSet(LS_CAPS_PREFIX + vins[i], null);
+      lsSet(LS_CAPS_AT_PREFIX + vins[i], null);
+    }
+    lsSet(LS_CAPS_INDEX, null);
   }
 
   // Never call this with a token, password, or PIN -- only public-ish values
@@ -608,6 +648,7 @@
       };
       lsSet(cacheKey, JSON.stringify(caps));
       lsSet(cacheAtKey, String(nowMs()));
+      capsIndexAdd(vin);   // so logout() can find and delete this entry
       callback(null, caps);
     });
   };
@@ -920,9 +961,15 @@
 
   // ------------------------------------------------------------- lifecycle
 
-  // logout() -- clears every persisted credential/token. Does not touch the
-  // capability cache (harmless without a valid session, and re-derived on
-  // next login anyway).
+  // logout() -- clears every persisted credential/token AND the capability
+  // cache. The caps entries are not credentials, but they carry the VIN in the
+  // key name and the model/year/fuel type in the value, so leaving them would
+  // contradict the config page's "Sign out and clear saved data" and leave a
+  // previous user's vehicle identifiable on a shared or handed-on phone.
+  //
+  // LS_DEVICE_ID is deliberately kept: it is a random UUID4 we generated, it
+  // identifies no person or vehicle, and keeping it stable avoids re-registering
+  // a new device with JLR on every sign-in.
   JlrClient.prototype.logout = function () {
     this._accessToken = null;
     this._authorizationToken = null;
@@ -937,6 +984,7 @@
     lsSet(LS_EXPIRES_AT, null);
     lsSet(LS_USER_ID, null);
     lsSet(LS_EMAIL, null);
+    capsCacheClear();
   };
 
   // ------------------------------------------------- motion gating / safety

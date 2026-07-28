@@ -350,8 +350,69 @@ function testMotionGating() {
   });
 }
 
+// ------------------------------------------------------- logout completeness
+// The config page's button says "Sign out and clear saved data". These tests
+// pin that promise. The caps cache carries the VIN in its KEY NAME and the
+// model/year/fuel type in its value, so leaving it behind would let the next
+// person on a shared or handed-on phone identify the previous user's vehicle.
+function testLogoutClearsEverything() {
+  resetState();
+  var VIN = 'SALGA2BJ8FA123456';
+
+  // A signed-in install with a populated capability cache.
+  memoryStore['jlr_access_token'] = 'access-abc';
+  memoryStore['jlr_refresh_token'] = 'refresh-abc';
+  memoryStore['jlr_authorization_token'] = 'authz-abc';
+  memoryStore['jlr_expires_at'] = String(Date.now() + 3600000);
+  memoryStore['jlr_user_id'] = 'user-1';
+  memoryStore['jlr_email'] = 'owner@example.com';
+  memoryStore['jlr_device_id'] = 'device-uuid-1';
+  memoryStore['jlr_caps_' + VIN] = JSON.stringify({ RDL: 'available', modelYear: 2018 });
+  memoryStore['jlr_caps_at_' + VIN] = String(Date.now());
+  memoryStore['jlr_caps_index'] = JSON.stringify([VIN]);
+
+  new JLR.Client().logout();
+
+  check('logout clears tokens and account identifiers', function () {
+    ['jlr_access_token', 'jlr_refresh_token', 'jlr_authorization_token',
+     'jlr_expires_at', 'jlr_user_id', 'jlr_email'].forEach(function (k) {
+      assert.strictEqual(memoryStore[k], undefined, k + ' should be gone');
+    });
+  });
+
+  check('logout clears the VIN-bearing capability cache', function () {
+    assert.strictEqual(memoryStore['jlr_caps_' + VIN], undefined);
+    assert.strictEqual(memoryStore['jlr_caps_at_' + VIN], undefined);
+    assert.strictEqual(memoryStore['jlr_caps_index'], undefined);
+  });
+
+  check('logout leaves no key or value naming the VIN', function () {
+    // The strongest form: nothing anywhere may still identify the vehicle.
+    Object.keys(memoryStore).forEach(function (k) {
+      assert.ok(k.indexOf(VIN) === -1, 'key still names the VIN: ' + k);
+      assert.ok(String(memoryStore[k]).indexOf(VIN) === -1,
+        'value still contains the VIN: ' + k);
+    });
+  });
+
+  check('logout keeps the anonymous device id', function () {
+    // A random UUID4 identifying no person or vehicle; keeping it stable
+    // avoids re-registering a new device with JLR on every sign-in.
+    assert.strictEqual(memoryStore['jlr_device_id'], 'device-uuid-1');
+  });
+
+  check('logout survives a corrupt caps index', function () {
+    resetState();
+    memoryStore['jlr_caps_index'] = '{not valid json';
+    memoryStore['jlr_access_token'] = 'access-abc';
+    new JLR.Client().logout();   // must not throw
+    assert.strictEqual(memoryStore['jlr_access_token'], undefined);
+  });
+}
+
 testFlattenStatusPure();
 testServiceStatePure();
 testMaskVinPure();
 testMotionGating();
+testLogoutClearsEverything();
 testConnectFlow();
