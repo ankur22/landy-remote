@@ -883,11 +883,16 @@
   JlrClient.prototype._pollService = function (vin, serviceId, lastStatus, attempt, callback) {
     var self = this;
     var state = String((lastStatus && lastStatus.status) || '').toLowerCase();
-    // Log the RAW status. If JLR ever returns a terminal value we do not
-    // recognise, this is the only way to see it -- otherwise it looks
-    // identical to a slow command and reports as a timeout.
-    log('poll ' + attempt + ' for ' + maskVin(vin) + ': status="' +
-        String((lastStatus && lastStatus.status) || '') + '"');
+    // Log the RAW status, but only when it CHANGES. If JLR ever returns a
+    // terminal value we do not recognise, this is the only way to see it --
+    // otherwise it looks identical to a slow command and reports as a
+    // timeout. Logging every attempt produced 25 near-identical lines per
+    // command and buried everything else.
+    if (state !== self._lastPolledState) {
+      self._lastPolledState = state;
+      log('poll ' + attempt + ' for ' + maskVin(vin) + ': status="' +
+          String((lastStatus && lastStatus.status) || '') + '"');
+    }
 
     if (state === 'successful' || state === 'success' ||
         state === 'completed' || state === 'complete' ||

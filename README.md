@@ -15,24 +15,30 @@ Jaguar Land Rover.**
 - **Honk & flash** — find the car in a car park.
 - **Find my car** — compass arrow and distance from your phone to the car's
   last reported position, with the fix's age and quality shown so you can judge
-  how much to trust it.
-- **Tyres & service** — pressures, service and AdBlue distances, fluid warnings.
-- **Remote engine start**, where the vehicle supports it.
+  how much to trust it. The arrow is only drawn once your watch's compass is
+  calibrated; if it asks for a figure-8, do that first. A confidently wrong
+  arrow is worse than none.
+- **Tyres & service** — pressures, total mileage, service and AdBlue distances,
+  fluid warnings.
+- **Remote climate** — start and stop, with the cabin temperature picked on the
+  watch at the moment you use it. On a petrol or diesel car this runs the
+  engine, so it warms the cabin and clears the screen before you walk out.
+- **Units** — miles or kilometres, °C or °F, kPa/bar/psi, in settings.
 
 Buttons for services your vehicle or InControl subscription does not provide
 are not drawn — the app asks the vehicle what it supports rather than assuming.
 
 ## Safety: the app locks down while the vehicle may be moving
 
-If the app cannot positively confirm you are stationary, it shows **"Vehicle in
-motion"** or **"Checking safety"** and nothing else — no location, no fuel
-level, no door states — and refuses every command.
+If the app cannot positively confirm you are stationary, the controls
+disappear and it says **"Vehicle in motion"** or **"Checking safety"**. Status,
+tyre pressures and find-my-car stay readable — only commands are refused.
 
-This is deliberate and it fails closed. The vehicle's own reported status can be
-hours stale, so it is never treated as proof the car is parked; the live signal
-is your phone's GPS speed. If that speed is unavailable, denied, stale, or
-indicates movement, the app stays locked down. Commands are blocked in the phone
-layer, not just hidden in the UI, so a stale screen cannot get one through.
+This fails closed. The vehicle's own reported status can be hours stale, so it
+is never treated as proof the car is parked; the live signal is your phone's
+GPS speed. If that speed is unavailable, denied, stale, or indicates movement,
+commands stay blocked. The block lives in the phone layer, not just the UI, so
+a stale screen cannot get a command through.
 
 Expect this if location permission is off, or indoors with a poor fix.
 
@@ -94,9 +100,11 @@ export PATH="$HOME/.local/bin:$PATH"   # pebble-tool lives in ~/.local/bin
 pebble build
 node test/unit-test.js                 # pure logic + canned-XHR tests
 node test/real-client-test.js          # real-client adapter, fakes only
-node test/bridge-test.js               # AppMessage bridge
-node test/startup-safety-test.js       # startup lockdown invariants
+node test/bridge-test.js               # AppMessage bridge, units, climate state
+node test/startup-safety-test.js       # safety and wiring invariants
+node test/analytics-test.js            # analytics, including the privacy floor
 node test/config-test.js               # configuration flow
+node test/config-page-test.js          # the hosted configuration page
 ```
 
 All automated tests use injected fakes — no test contacts JLR or a vehicle.

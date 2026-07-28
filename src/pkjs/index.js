@@ -91,15 +91,6 @@ function climateIsOn(status) {
   var engineRunning = /ENGINE_ON|ENGINE_RUNNING|ENGINE_START/.test(vst) &&
                       !/ENGINE_OFF/.test(vst);
 
-  // Everything that might indicate a running engine, logged together: which
-  // of these actually moves on this car has not been established, and
-  // guessing from another project's list is what produced the wrong answer.
-  log('climate: operating="' + state + '" vehicleState="' + vst +
-      '" engineRunning=' + engineRunning +
-      ' remaining=' + status.CLIMATE_STATUS_REMAINING_RUNTIME +
-      ' ffh=' + status.CLIMATE_STATUS_FFH_REMAINING_RUNTIME +
-      ' coolant=' + status.ENGINE_COOLANT_TEMP +
-      ' assumedOn=' + (now < onUntil) + ' assumedOff=' + (now < offUntil));
 
   if (now < offUntil) return false;                    // we just stopped it
   if (vehicleSaysOn || engineRunning) return true;     // the car is authoritative
@@ -296,8 +287,7 @@ function tyreKpa(raw) {
   // owner's car once the tyre sensors had not reported for a while. Rescaling
   // it produces 3276.7 kPa, which then renders as a confident "32.8 bar".
   if (n === 32767 || n === 65535 || n === 255) {
-    log('tyre: raw=' + n + ' is a no-data sentinel');
-    return -1;
+    return -1;   // no TPMS reading available; the watch shows "--"
   }
 
   // The raw scale differs by model generation: plain kPa on this Discovery,
@@ -310,8 +300,7 @@ function tyreKpa(raw) {
   // display. Showing a fabricated pressure is worse than showing nothing: a
   // driver may act on it.
   if (n < 50 || n > 700) {
-    log('tyre: raw=' + raw + ' normalised=' + n + ' outside 50-700 kPa, treating as no data');
-    return -1;
+    return -1;   // implausible for a tyre; treat as no data
   }
   return n;
 }
@@ -377,7 +366,8 @@ function agoSecondsFromIso(iso) {
 function sendDict(dict, what, attempt) {
   attempt = attempt || 0;
   Pebble.sendAppMessage(dict, function () {
-    log(what + ' sent ok');
+    // Deliberately silent on success -- this fires on every status refresh and
+    // drowned the log. Failures below are still reported.
   }, function (e) {
     if (attempt >= 4) {
       log(what + ' failed permanently: ' + JSON.stringify(e));
@@ -546,9 +536,6 @@ function handleGetStatus(client) {
 
     var tUnit = tyreUnit();
     dict['TYRE_UNIT'] = tUnit === 'bar' ? 1 : (tUnit === 'psi' ? 2 : 0);
-    log('tyre raw: FL=' + JSON.stringify(safe.TYRE_PRESSURE_FRONT_LEFT) +
-        ' FR=' + JSON.stringify(safe.TYRE_PRESSURE_FRONT_RIGHT) +
-        ' unit=' + tUnit);
     dict['TYRE_FL_KPA'] = tyreDisplayX10(safe.TYRE_PRESSURE_FRONT_LEFT, tUnit);
     dict['TYRE_FR_KPA'] = tyreDisplayX10(safe.TYRE_PRESSURE_FRONT_RIGHT, tUnit);
     dict['TYRE_RL_KPA'] = tyreDisplayX10(safe.TYRE_PRESSURE_REAR_LEFT, tUnit);
