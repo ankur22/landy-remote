@@ -321,3 +321,21 @@ assert.strictEqual(
   'a counted-down runtime must not imply running without engine state');
 
 console.log('bridge climate total: 2 further assertions passed');
+
+// Both observed PARKED values must read as climate-off. The vehicle reports
+// KEY_ON_ENGINE_OFF sometimes and KEY_REMOVED at others (both captured live
+// 2026-07-28); only the first was pinned before.
+['KEY_ON_ENGINE_OFF', 'KEY_REMOVED'].forEach(function (parked) {
+  assert.strictEqual(
+    pushStatus(statusWith({
+      VEHICLE_STATE_TYPE: parked,
+      // Note the frozen countdown: after a stop REMAINING stays where it
+      // stopped (9 of 30 observed) instead of resetting. It must not, on its
+      // own, keep the app claiming climate is running.
+      CLIMATE_STATUS_REMAINING_RUNTIME: '9',
+      CLIMATE_STATUS_VENTING_TIME: '30'
+    })).CLIMATE_ON, 0,
+    parked + ' with a frozen countdown must read as climate off');
+});
+
+console.log('bridge climate parked: 2 further assertions passed');

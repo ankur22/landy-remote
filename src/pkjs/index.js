@@ -111,12 +111,13 @@ function climateIsOn(status) {
 // car). Used for display context only -- "14 of 30" says how far through you
 // are, which a bare "14 min" does not.
 //
-// NOT used to infer whether climate is running, though it is tempting:
-// REMAINING == VENTING when idle and counts down while running, which fits
-// both observed dumps. But what REMAINING reads just AFTER a stop has never
-// been seen. If it settles at 0 rather than resetting to the total, that rule
-// would report climate running forever -- a persistent false "on" rather than
-// an obvious glitch. VEHICLE_STATE_TYPE is explicit and observed; this is not.
+// NOT used to infer whether climate is running, and this is now MEASURED
+// rather than cautious. The rule "REMAINING < VENTING means running" fits the
+// idle and running dumps -- but a dump taken shortly after stopping showed
+// REMAINING = 9 against VENTING = 30. It does not reset; it freezes wherever
+// the countdown stopped. That rule would therefore report climate running
+// indefinitely after any use: a permanent false "on" rather than an obvious
+// glitch. VEHICLE_STATE_TYPE is explicit and observed; this is not usable.
 function climateTotalMin(status) {
   var n = parseInt(status.CLIMATE_STATUS_VENTING_TIME, 10);
   return isNaN(n) || n <= 0 ? -1 : n;
