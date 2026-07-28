@@ -168,3 +168,67 @@ check('a send is fire-and-forget: handlers do nothing', function () {
 });
 
 console.log('\nanalytics: ' + passed + ' assertions passed');
+
+// ---------------------------------------------------------------------------
+// Send outcomes must be logged. The failure mode this exists for is silent by
+// construction: the service rejects unknown fields, so a schema drift is a 400
+// that produces no user-visible symptom and no log entry at all. The handlers
+// log but must still never act -- no retry, no blocking, nothing surfaced.
+// ---------------------------------------------------------------------------
+(function () {
+  function loggingClient(behaviour) {
+    var logs = [];
+    var a = Analytics.create({
+      version: '1.2.3',
+      log: function (m) { logs.push(m); },
+      xhrFactory: function () {
+        var xhr = {
+          open: function () {}, setRequestHeader: function () {}, timeout: 0,
+          send: function () { behaviour(xhr); }
+        };
+        return xhr;
+      }
+    });
+    return { analytics: a, logs: logs };
+  }
+
+  function joined(logs) { return logs.join(' | '); }
+
+  var ok = loggingClient(function (xhr) { xhr.status = 204; xhr.onload(); });
+  ok.analytics.appOpen();
+  check('a successful send logs the status', function () {
+    assert.ok(/sending/.test(joined(ok.logs)), 'the outgoing payload is logged');
+    assert.ok(/HTTP 204 ok/.test(joined(ok.logs)));
+  });
+
+  var rejected = loggingClient(function (xhr) {
+    xhr.status = 400; xhr.responseText = 'invalid event'; xhr.onload();
+  });
+  rejected.analytics.appOpen();
+  check('a rejected send is logged as REJECTED with the body', function () {
+    assert.ok(/HTTP 400 REJECTED/.test(joined(rejected.logs)));
+    assert.ok(/invalid event/.test(joined(rejected.logs)));
+  });
+
+  // pkjs reports connection failures as status 0 with no onerror.
+  var dead = loggingClient(function (xhr) { xhr.status = 0; xhr.onload(); });
+  dead.analytics.appOpen();
+  check('status 0 is logged as no response, not as success', function () {
+    assert.ok(/no response \(status 0\)/.test(joined(dead.logs)));
+    assert.ok(!/ok/.test(joined(dead.logs).replace(/sending.*/, '')));
+  });
+
+  var timedOut = loggingClient(function (xhr) { xhr.ontimeout(); });
+  timedOut.analytics.appOpen();
+  check('a timeout is logged', function () {
+    assert.ok(/timed out/.test(joined(timedOut.logs)));
+  });
+
+  check('logging still does not let a failure reach the caller', function () {
+    var boom = loggingClient(function () { throw new Error('network down'); });
+    assert.doesNotThrow(function () { boom.analytics.appOpen(); });
+    assert.ok(/threw before send/.test(joined(boom.logs)));
+  });
+}());
+
+console.log('analytics logging: 6 assertions passed');

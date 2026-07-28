@@ -74,15 +74,6 @@ static void prv_arrow_update_proc(Layer *layer, GContext *ctx) {
   // measurement, which is the right way round.
   int32_t heading_deg = s_have_heading ? (s_true_heading * 360 / TRIG_MAX_ANGLE) : 0;
   int32_t angle_deg = pos->bearing_deg - heading_deg;
-  // Both candidates logged so this can be re-checked against the world in one
-  // glance rather than another round of guessing: `arrow` is what is drawn,
-  // `alt` is what the other convention would have drawn.
-  APP_LOG(APP_LOG_LEVEL_INFO,
-          "find: bearing=%d heading=%d arrow=%d alt=%d status=%d have=%d",
-          (int) pos->bearing_deg, (int) heading_deg,
-          (int) ((angle_deg % 360 + 360) % 360),
-          (int) (((pos->bearing_deg - (360 - heading_deg)) % 360 + 360) % 360),
-          (int) s_compass_status, (int) s_have_heading);
   while (angle_deg < 0) angle_deg += 360;
   angle_deg = angle_deg % 360;
   int32_t angle_trig = (angle_deg * TRIG_MAX_ANGLE) / 360;
@@ -167,13 +158,6 @@ static void prv_compass_handler(CompassHeadingData data) {
   s_true_heading = data.true_heading;
   s_compass_status = data.compass_status;
   s_have_heading = (data.compass_status != CompassStatusDataInvalid);
-  // Logged separately from the draw so three failures can be told apart: no
-  // compass events at all (this line stops), events arriving but no redraw
-  // (this line moves while "find:" does not), and redraws that compute the
-  // same angle anyway (both move, arrow does not).
-  APP_LOG(APP_LOG_LEVEL_INFO, "compass: heading=%d status=%d",
-          (int) (data.true_heading * 360 / TRIG_MAX_ANGLE),
-          (int) data.compass_status);
   layer_mark_dirty(s_arrow_layer);
 }
 

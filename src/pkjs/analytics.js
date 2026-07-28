@@ -122,21 +122,46 @@
         }
       }
       sent.push(body);
+      var payload = JSON.stringify(body);
       var xhr;
       try {
         xhr = xhrFactory();
         xhr.open('POST', endpoint, true);
         xhr.setRequestHeader('Content-Type', 'application/json');
         xhr.timeout = SEND_TIMEOUT_MS;
-        // Deliberately no handlers that do anything. A dead or slow analytics
-        // endpoint must be indistinguishable from a healthy one as far as the
-        // app is concerned.
-        xhr.onload = function () {};
-        xhr.onerror = function () {};
-        xhr.ontimeout = function () {};
-        xhr.send(JSON.stringify(body));
+
+        // The handlers LOG but never act. A dead or slow endpoint must still
+        // be indistinguishable from a healthy one as far as the app is
+        // concerned -- nothing here retries, blocks, or surfaces to the user.
+        //
+        // Logging the outcome matters because the failure mode is otherwise
+        // completely silent: the service rejects unknown fields, so a schema
+        // drift is a 400 that produces no symptom anywhere. The payload is
+        // safe to log in full -- every field is allowlisted and tested, and
+        // wid is a random install id.
+        xhr.onload = function () {
+          // pkjs XHR reports connection failures as status 0 with no onerror
+          // (see the emulator note in jlr.js), so treat that as a failure here
+          // rather than as a successful send.
+          if (xhr.status === 0) {
+            onLog('analytics ' + event + ' -> no response (status 0)');
+          } else if (xhr.status >= 400) {
+            onLog('analytics ' + event + ' -> HTTP ' + xhr.status + ' REJECTED' +
+                  ' body=' + String(xhr.responseText).substring(0, 120));
+          } else {
+            onLog('analytics ' + event + ' -> HTTP ' + xhr.status + ' ok');
+          }
+        };
+        xhr.onerror = function () {
+          onLog('analytics ' + event + ' -> network error');
+        };
+        xhr.ontimeout = function () {
+          onLog('analytics ' + event + ' -> timed out after ' + SEND_TIMEOUT_MS + 'ms');
+        };
+        onLog('analytics ' + event + ' -> sending ' + payload);
+        xhr.send(payload);
       } catch (e) {
-        onLog('analytics send failed (ignored): ' + e);
+        onLog('analytics ' + event + ' -> threw before send (ignored): ' + e);
       }
     }
 
