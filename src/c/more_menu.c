@@ -106,11 +106,18 @@ static void prv_window_load(Window *window) {
   // are offered as a pair. Shipping start without stop would leave the engine
   // running with no way to end it from the same app.
   if (st->cap_remote_start != CAP_NOT_CAPABLE) {
-    prv_add_item("Start Climate",
-                 st->cap_remote_start == CAP_NOT_ENABLED ? "Not enabled" : "Warm/cool the cabin",
-                 CMD_REMOTE_START, st->cap_remote_start == CAP_NOT_ENABLED, false);
-    prv_add_item("Stop Climate", "Shut the engine off",
-                 CMD_REMOTE_STOP, st->cap_remote_start == CAP_NOT_ENABLED, false);
+    if (st->climate_on) {
+      // One entry, reflecting reality. Listing "Start Climate" while it is
+      // already running is how the app looked like it had lost track of the car.
+      prv_add_item("Climate: ON", "Open to stop it",
+                   CMD_REMOTE_START, st->cap_remote_start == CAP_NOT_ENABLED, false);
+    } else {
+      prv_add_item("Start Climate",
+                   st->cap_remote_start == CAP_NOT_ENABLED ? "Not enabled" : "Warm/cool the cabin",
+                   CMD_REMOTE_START, st->cap_remote_start == CAP_NOT_ENABLED, false);
+      prv_add_item("Stop Climate", "If it is already running",
+                   CMD_REMOTE_STOP, st->cap_remote_start == CAP_NOT_ENABLED, false);
+    }
   }
 
   s_section = (SimpleMenuSection) {

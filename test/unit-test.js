@@ -323,8 +323,23 @@ function testMotionGating() {
     assert.strictEqual(m.moving, true);
   });
 
-  check('motion: an engine-running state marks moving', function () {
-    assert.strictEqual(JLR.motionState({ VEHICLE_STATE_TYPE: 'KEY_ON_ENGINE_ON' }, {}, null).moving, true);
+  // Reversed deliberately. Marking a running engine as "moving" created a
+  // trap on the real vehicle: remote climate STARTS the engine, so starting it
+  // closed the gate and Stop Climate was then refused -- the app could start
+  // the engine and block the only control that stops it. An idling car is not
+  // a moving car; motion is measured by the two speed signals.
+  check('motion: a running engine alone does NOT mark moving', function () {
+    var m = JLR.motionState(
+      { VEHICLE_STATE_TYPE: 'KEY_ON_ENGINE_ON' }, { speed: 0 }, { speed: 0, units: 'ms' });
+    assert.strictEqual(m.moving, false);
+    assert.strictEqual(m.commandsAllowed, true, 'Stop Climate must remain reachable');
+  });
+
+  check('motion: a running engine AND real speed is still blocked', function () {
+    var m = JLR.motionState(
+      { VEHICLE_STATE_TYPE: 'KEY_ON_ENGINE_ON' }, { speed: 40 }, { speed: 0, units: 'ms' });
+    assert.strictEqual(m.moving, true);
+    assert.strictEqual(m.commandsAllowed, false);
   });
 
   check('motion: an UNKNOWN vehicle state is not treated as moving on its own', function () {

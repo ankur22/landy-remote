@@ -24,6 +24,7 @@ static TextLayer *s_title_layer;
 static TextLayer *s_temp_layer;
 static TextLayer *s_hint_layer;
 static char s_temp_buf[16];
+static char s_title_buf[32];
 static int s_temp_c10;
 
 // The target is always held in Celsius, because the car's RCC scale is defined
@@ -36,7 +37,31 @@ static int s_temp_c10;
 // resolution, not a rounding bug, and pretending otherwise would send a
 // setpoint the car would silently alter.
 static void prv_render(void) {
-  if (state_get()->temp_in_f) {
+  VehicleState *st = state_get();
+
+  if (st->climate_on) {
+    // Running: report the state rather than inviting a second start.
+    if (st->climate_runtime_min > 0) {
+      snprintf(s_temp_buf, sizeof(s_temp_buf), "%d min", st->climate_runtime_min);
+    } else {
+      snprintf(s_temp_buf, sizeof(s_temp_buf), "ON");
+    }
+    text_layer_set_text(s_temp_layer, s_temp_buf);
+    // "left of 30" gives the bare remaining figure some context.
+    if (st->climate_runtime_min > 0 && st->climate_total_min > 0) {
+      snprintf(s_title_buf, sizeof(s_title_buf), "Running, of %d min",
+               st->climate_total_min);
+      text_layer_set_text(s_title_layer, s_title_buf);
+    } else {
+      text_layer_set_text(s_title_layer, "Climate running");
+    }
+    text_layer_set_text(s_hint_layer, "SELECT to stop\nBACK to leave running");
+    return;
+  }
+
+  text_layer_set_text(s_title_layer, "Cabin target");
+  text_layer_set_text(s_hint_layer, "UP/DOWN adjust\nSELECT start, BACK cancel");
+  if (st->temp_in_f) {
     int f10 = (s_temp_c10 * 9) / 5 + 320;
     snprintf(s_temp_buf, sizeof(s_temp_buf), "%d F", (f10 + 5) / 10);
   } else {
@@ -47,6 +72,9 @@ static void prv_render(void) {
 }
 
 static void prv_adjust(int delta) {
+  if (state_get()->climate_on) {
+    return;   // nothing to adjust; this window is a stop control right now
+  }
   s_temp_c10 += delta;
   if (s_temp_c10 < TEMP_MIN_C10) s_temp_c10 = TEMP_MIN_C10;
   if (s_temp_c10 > TEMP_MAX_C10) s_temp_c10 = TEMP_MAX_C10;
@@ -62,6 +90,16 @@ static void prv_down_click(ClickRecognizerRef recognizer, void *context) {
 }
 
 static void prv_select_click(ClickRecognizerRef recognizer, void *context) {
+  // When climate is already running this window is a STOP control, not a
+  // picker. Offering "start" while the engine is audibly running -- which is
+  // what it did before it knew the state -- makes the app look like it has
+  // lost track of the car.
+  if (state_get()->climate_on) {
+    comm_send_cmd(CMD_REMOTE_STOP);
+    window_stack_remove(s_window, false);
+    command_window_push(CMD_REMOTE_STOP, "Stopping climate...");
+    return;
+  }
   // Remember the choice so the next start defaults to it rather than making
   // the user dial the same number in every morning.
   state_set_climate_temp_c10(s_temp_c10);
@@ -86,7 +124,6 @@ static void prv_window_load(Window *window) {
   s_title_layer = text_layer_create(GRect(4, 8, bounds.size.w - 8, 26));
   text_layer_set_font(s_title_layer, fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD));
   text_layer_set_text_alignment(s_title_layer, GTextAlignmentCenter);
-  text_layer_set_text(s_title_layer, "Cabin target");
   layer_add_child(root, text_layer_get_layer(s_title_layer));
 
   s_temp_layer = text_layer_create(GRect(4, bounds.size.h / 2 - 34, bounds.size.w - 8, 46));
@@ -98,7 +135,6 @@ static void prv_window_load(Window *window) {
   text_layer_set_font(s_hint_layer, fonts_get_system_font(FONT_KEY_GOTHIC_14));
   text_layer_set_text_alignment(s_hint_layer, GTextAlignmentCenter);
   text_layer_set_overflow_mode(s_hint_layer, GTextOverflowModeWordWrap);
-  text_layer_set_text(s_hint_layer, "UP/DOWN adjust\nSELECT start, BACK cancel");
   layer_add_child(root, text_layer_get_layer(s_hint_layer));
 
   prv_render();

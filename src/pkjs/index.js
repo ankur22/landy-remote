@@ -13,6 +13,119 @@ var MOCK = require('./mock');
 var REAL = require('./real');
 var CONFIG = require('./config');
 var SELFTEST = require('./selftest');
+var ANALYTICS = require('./analytics');
+
+// Anonymous usage counters. See analytics.js for exactly what is and is not
+// sent. Every call below happens AFTER the user-visible work is finished, so a
+// dead endpoint can never delay a command or a screen.
+var analytics = ANALYTICS.create({ version: '1.0.0', log: log });
+var capabilitiesReported = false;
+
+// ---------------------------------------------------------------- climate state
+//
+// CLIMATE_STATUS_OPERATING_STATUS is minutes-stale: after a remote start the
+// car keeps reporting OFF for a while, so a UI trusting it alone shows
+// "climate off" while the engine is audibly running -- and offers Start again
+// rather than Stop. The reference implementation carries the same workaround.
+// We hold a short assumption after a command we know succeeded, and let the
+// vehicle's own reading take over once it catches up.
+var CLIMATE_ACTIVE_STATES = {
+  COOLING: 1, HEATING: 1, PRECLIM: 1, ENGINE_ON: 1, RUNNING: 1, STARTUP: 1, ON: 1
+};
+var CLIMATE_ASSUMED_ON_MS = 30 * 60 * 1000;   // JLR auto-stops around here
+var CLIMATE_ASSUMED_OFF_MS = 15 * 60 * 1000;
+
+// PERSISTED, not held in memory. pkjs is torn down when the watchapp exits, so
+// an in-memory assumption is lost exactly when it is needed most: start
+// climate, leave the app, come back, and the car is still reporting the stale
+// OFF while the engine runs. localStorage survives that.
+var CLIMATE_ON_UNTIL_KEY = 'jlr_climate_on_until';
+var CLIMATE_OFF_UNTIL_KEY = 'jlr_climate_off_until';
+
+function assumeUntil(key, ms) {
+  try {
+    if (typeof localStorage !== 'undefined' && localStorage) {
+      localStorage.setItem(key, String(Date.now() + ms));
+    }
+  } catch (e) { /* best effort */ }
+}
+
+function assumedUntil(key) {
+  try {
+    if (typeof localStorage === 'undefined' || !localStorage) return 0;
+    var v = parseInt(localStorage.getItem(key), 10);
+    return isNaN(v) ? 0 : v;
+  } catch (e) { return 0; }
+}
+
+function clearAssumption(key) {
+  try {
+    if (typeof localStorage !== 'undefined' && localStorage) {
+      localStorage.removeItem(key);
+    }
+  } catch (e) { /* best effort */ }
+}
+
+function climateIsOn(status) {
+  var now = Date.now();
+  var state = String(status.CLIMATE_STATUS_OPERATING_STATUS || '').toUpperCase();
+  var vehicleSaysOn = CLIMATE_ACTIVE_STATES[state] === 1;
+  var onUntil = assumedUntil(CLIMATE_ON_UNTIL_KEY);
+  var offUntil = assumedUntil(CLIMATE_OFF_UNTIL_KEY);
+
+  // The owner's Discovery reports CLIMATE_STATUS_OPERATING_STATUS = "OFF"
+  // even while remote climate is audibly running (observed 2026-07-28), so
+  // that key alone is not a usable signal on this vehicle.
+  //
+  // Remote climate on an ICE car IS the engine running, so VEHICLE_STATE_TYPE
+  // is the better signal. Note this is the same key deliberately excluded from
+  // motionState -- and the distinction matters: a running engine says nothing
+  // about whether the car is MOVING, but it says everything about whether
+  // climate is on.
+  // Confirmed on the owner's vehicle 2026-07-28: while remote climate runs,
+  // VEHICLE_STATE_TYPE = "ENGINE_ON_REMOTE_START" -- and the climate key still
+  // reads OFF. Parked it reads "KEY_ON_ENGINE_OFF", hence the ENGINE_OFF
+  // exclusion, which must stay: "KEY_ON_ENGINE_OFF" contains "ENGINE_OF"...
+  // but not "ENGINE_ON", so order matters less than the explicit exclusion.
+  var vst = String(status.VEHICLE_STATE_TYPE || '').toUpperCase();
+  var engineRunning = /ENGINE_ON|ENGINE_RUNNING|ENGINE_START/.test(vst) &&
+                      !/ENGINE_OFF/.test(vst);
+
+  // Everything that might indicate a running engine, logged together: which
+  // of these actually moves on this car has not been established, and
+  // guessing from another project's list is what produced the wrong answer.
+  log('climate: operating="' + state + '" vehicleState="' + vst +
+      '" engineRunning=' + engineRunning +
+      ' remaining=' + status.CLIMATE_STATUS_REMAINING_RUNTIME +
+      ' ffh=' + status.CLIMATE_STATUS_FFH_REMAINING_RUNTIME +
+      ' coolant=' + status.ENGINE_COOLANT_TEMP +
+      ' assumedOn=' + (now < onUntil) + ' assumedOff=' + (now < offUntil));
+
+  if (now < offUntil) return false;                    // we just stopped it
+  if (vehicleSaysOn || engineRunning) return true;     // the car is authoritative
+  if (now < onUntil) return true;                      // we started it; car lagging
+  return false;
+}
+
+// The configured total run length (CLIMATE_STATUS_VENTING_TIME, 30 on this
+// car). Used for display context only -- "14 of 30" says how far through you
+// are, which a bare "14 min" does not.
+//
+// NOT used to infer whether climate is running, though it is tempting:
+// REMAINING == VENTING when idle and counts down while running, which fits
+// both observed dumps. But what REMAINING reads just AFTER a stop has never
+// been seen. If it settles at 0 rather than resetting to the total, that rule
+// would report climate running forever -- a persistent false "on" rather than
+// an obvious glitch. VEHICLE_STATE_TYPE is explicit and observed; this is not.
+function climateTotalMin(status) {
+  var n = parseInt(status.CLIMATE_STATUS_VENTING_TIME, 10);
+  return isNaN(n) || n <= 0 ? -1 : n;
+}
+
+function climateRuntimeMin(status) {
+  var n = parseInt(status.CLIMATE_STATUS_REMAINING_RUNTIME, 10);
+  return isNaN(n) || n < 0 ? -1 : n;
+}
 
 var rawClient = USE_MOCK ? null : new JLR.Client();
 var activeClient = USE_MOCK ? new MOCK.MockClient() :
@@ -62,6 +175,12 @@ CMD_TO_SERVICE[CMD_HONK] = 'HBLF';
 CMD_TO_SERVICE[CMD_REFRESH] = 'VHS';
 CMD_TO_SERVICE[CMD_REMOTE_START] = 'REON';
 CMD_TO_SERVICE[CMD_REMOTE_STOP] = 'REOFF';
+
+// CMD_OUTCOME int -> a stable label. Kept as an explicit map so renumbering
+// the enum cannot silently change what a metric means.
+var OUTCOME_NAME = {
+  1: 'success', 2: 'declined', 3: 'pending', 4: 'error', 5: 'blocked_motion'
+};
 
 var SUCCESS_MESSAGE = {};
 SUCCESS_MESSAGE[CMD_LOCK] = 'Locked.';
@@ -403,6 +522,9 @@ function handleGetStatus(client) {
     dict['STATUS_DOORS_OPEN'] = doorsOpen(safe) ? 1 : 0;
     dict['STATUS_WINDOWS_OPEN'] = windowsOpen(safe) ? 1 : 0;
     dict['STATUS_UPDATED_AGO_SEC'] = agoSecondsFromIso(safe.LAST_UPDATED_TIME);
+    dict['CLIMATE_ON'] = climateIsOn(safe) ? 1 : 0;
+    dict['CLIMATE_RUNTIME_MIN'] = climateRuntimeMin(safe);
+    dict['CLIMATE_TOTAL_MIN'] = climateTotalMin(safe);
 
     dict['CAP_LOCK'] = capEnum(bundle.caps.RDL);
     dict['CAP_UNLOCK'] = capEnum(bundle.caps.RDU);
@@ -426,6 +548,24 @@ function handleGetStatus(client) {
     dict['COOLANT_WARN'] = boolField(safe.ENG_COOLANT_LEVEL_WARN);
 
     sendDict(dict, locked ? 'status (commands blocked)' : 'status');
+
+    // After the send. The distinction that matters is "genuinely moving"
+    // versus "could not tell" -- if the latter dominates, the gate is mostly
+    // locking out people beside a parked car, which is a fixable problem we
+    // would otherwise never hear about.
+    if (locked) {
+      analytics.safetyGate(
+        (bundle.motion && bundle.motion.moving && !bundle.motion.unknown) ?
+          'moving' : 'unknown');
+    }
+    // Once per session is enough -- capabilities are cached for 24h and do not
+    // change. Answers whether capability gating is load-bearing or theoretical.
+    if (!capabilitiesReported && bundle.caps) {
+      capabilitiesReported = true;
+      ['RDL', 'RDU', 'HBLF', 'VHS', 'REON'].forEach(function (svc) {
+        analytics.capability(svc, bundle.caps[svc] || 'unknown');
+      });
+    }
   });
 }
 
@@ -458,6 +598,9 @@ function handleGetPosition(client, motionBlockedCb) {
       dict['POS_AGE_SEC'] = pos.ageSec;
       dict['POS_DAYS_SINCE_FIX'] = pos.daysSinceFix;
       sendDict(dict, 'position');
+      // Find-my-car is the only feature that costs a location permission in an
+      // app that holds car credentials. Worth knowing whether anyone uses it.
+      analytics.featureUse('find_car');
     });
   });
 }
@@ -524,6 +667,17 @@ function prv_send_command(client, cmd, serviceCode, climateTempC10) {
     log('command ' + cmd + ' outcome=' + dict['CMD_OUTCOME'] +
         ' msg="' + dict['CMD_MESSAGE'] + '"');
     sendDict(dict, 'command result');
+    // After sendDict, never before: the watch gets its answer first.
+    analytics.command(cmd, OUTCOME_NAME[dict['CMD_OUTCOME']] || 'unknown');
+    if (dict['CMD_OUTCOME'] === 1) {
+      if (cmd === CMD_REMOTE_START) {
+        assumeUntil(CLIMATE_ON_UNTIL_KEY, CLIMATE_ASSUMED_ON_MS);
+        clearAssumption(CLIMATE_OFF_UNTIL_KEY);
+      } else if (cmd === CMD_REMOTE_STOP) {
+        assumeUntil(CLIMATE_OFF_UNTIL_KEY, CLIMATE_ASSUMED_OFF_MS);
+        clearAssumption(CLIMATE_ON_UNTIL_KEY);
+      }
+    }
     // A command that changed vehicle state (or a forced refresh) should be
     // followed by a fresh status push so the status card doesn't sit on
     // stale data until the user backs out and back in.

@@ -12,6 +12,7 @@
   var DISTANCE_UNIT_KEY = 'jlr_distance_unit';
   var TEMP_UNIT_KEY = 'jlr_temp_unit';
   var TYRE_UNIT_KEY = 'jlr_tyre_unit';
+  var ANALYTICS_OFF_KEY = 'jlr_analytics_off';
 
   function typedError(code, message, cause) {
     var error = new Error(message);
@@ -103,6 +104,9 @@
       storageSet(storage, TYRE_UNIT_KEY,
         (payload.tyreUnit === 'bar' || payload.tyreUnit === 'psi') ?
           payload.tyreUnit : 'kpa');
+      // Opt-out is stored as a positive "off" flag so the absence of the key
+      // means enabled -- matching analytics.js, which must agree exactly.
+      storageSet(storage, ANALYTICS_OFF_KEY, payload.analytics === false ? '1' : null);
     }
 
     // URL the settings button opens, carrying enough state for the page to
@@ -119,8 +123,9 @@
       var t = storageGet(storage, TEMP_UNIT_KEY) === 'f' ? 'f' : 'c';
       var pRaw = storageGet(storage, TYRE_UNIT_KEY);
       var p = (pRaw === 'bar' || pRaw === 'psi') ? pRaw : 'kpa';
+      var analyticsOn = storageGet(storage, ANALYTICS_OFF_KEY) === '1' ? '0' : '1';
       return CONFIG_URL + '?si=' + signedIn + '&pin=' + pinStored +
-        '&d=' + d + '&t=' + t + '&p=' + p;
+        '&d=' + d + '&t=' + t + '&p=' + p + '&a=' + analyticsOn;
     }
 
     function save(payload, callback) {

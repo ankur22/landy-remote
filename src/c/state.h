@@ -51,6 +51,9 @@ typedef struct {
   bool distance_in_km;    // false = miles
   bool temp_in_f;         // false = Celsius
   int tyre_unit;          // 0 = kPa, 1 = bar, 2 = psi
+  bool climate_on;        // remote climate currently running
+  int climate_runtime_min; // minutes it will keep running; -1 = unknown
+  int climate_total_min;   // configured total run length; -1 = unknown
   int climate_temp_c10;   // last chosen remote-climate target; -1 = unset
 
   // Freshness: the phone reports "N seconds old" at message-construction

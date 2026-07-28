@@ -1180,16 +1180,22 @@
       reasons.push('vehicle reported ' + Math.round(carKmh) + ' km/h');
     }
 
-    // Corroboration only. The full VEHICLE_STATE_TYPE enum is NOT publicly
-    // documented -- the only value observed on the target car is
-    // KEY_ON_ENGINE_OFF (parked). So we deliberately do not allowlist "parked"
-    // states, because an unknown value must never be read as "safe to show".
-    // We only react to states that positively indicate a running engine.
-    var vst = String(status.VEHICLE_STATE_TYPE || '').toUpperCase();
-    if (vst && /ENGINE_ON|ENGINE_RUNNING|DRIVING|MOVING/.test(vst)) {
-      moving = true;
-      reasons.push('vehicle state ' + vst);
-    }
+    // VEHICLE_STATE_TYPE is deliberately NOT consulted.
+    //
+    // It used to mark a running engine as "moving". That was wrong, and it
+    // created a trap: remote climate STARTS THE ENGINE, so the moment the user
+    // started it the car reported an engine-on state, the gate closed, and
+    // Stop Climate was refused -- the app could start the engine and then
+    // block the only control that stops it. Reported from the vehicle
+    // 2026-07-28.
+    //
+    // An idling car is not a moving car. This gate exists to prevent
+    // distracting a driver and unlocking a car in motion, and motion is
+    // measured directly by the two speed signals above: the phone's live GPS
+    // speed and the vehicle's own reported speed. A car that is genuinely
+    // being driven has a non-zero speed, so nothing is lost by dropping an
+    // inference that mostly produced false positives (idling, warming up,
+    // sitting in traffic with the engine on, remote start).
 
     var updatedMs = parseTs(status.LAST_UPDATED_TIME);
     var ageSeconds = updatedMs === null ? null :

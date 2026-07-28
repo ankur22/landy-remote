@@ -130,10 +130,32 @@ test/                      automated tests, fakes only
 
 ## Privacy
 
-Credentials and vehicle data go directly between your phone and JLR. This
-project runs no server and collects no analytics. On the watch, only the
-glanceable status fields are cached — never your VIN, credentials, or the
-vehicle's location.
+**Your credentials and vehicle data go directly between your phone and JLR.**
+No server of this project ever sees them. On the watch, only the glanceable
+status fields are cached — never your VIN, credentials, or the vehicle's
+location.
+
+**Anonymous usage statistics are collected, and you can turn them off** in
+settings. This changed in v1.1 — earlier versions collected nothing, and it
+would be wrong to quietly swap this section. What is counted:
+
+- that the app was opened, and its version
+- which feature was used (lock, unlock, honk, find-my-car, climate)
+- whether a command succeeded, was declined, or timed out
+- whether the safety gate blocked a command, and whether that was because the
+  vehicle was moving or because motion could not be determined
+- which remote services your vehicle supports
+- the country the request came from, derived by the server from the connection
+
+What is **never** collected: your VIN, your vehicle's position, distance,
+bearing or speed, your email, tokens or PIN, and any vehicle status value —
+fuel, range, odometer, lock or door state, tyre pressures. No timestamp is
+sent by the phone, and the receiving service does not log or store IP
+addresses.
+
+The purpose is finding bugs that only appear on other people's cars: this app
+is developed against a single vehicle, and command reliability is known to
+vary by model and year.
 
 ## Credits
 

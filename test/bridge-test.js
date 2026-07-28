@@ -228,3 +228,96 @@ assert.strictEqual(last().STATUS_RANGE_MILES, -1, 'unknown range stays -1');
 assert.strictEqual(last().STATUS_ODOMETER, -1, 'unknown odometer stays -1');
 
 console.log('bridge units: 9 further assertions passed');
+
+// ---------------------------------------------------------------------------
+// Climate state. CLIMATE_STATUS_OPERATING_STATUS lags by minutes after a
+// remote start, so a UI trusting it alone shows "off" while the engine is
+// audibly running and offers Start again instead of Stop. Observed on the
+// vehicle 2026-07-28.
+// ---------------------------------------------------------------------------
+function statusWith(extra) {
+  var base = { DOOR_IS_ALL_DOORS_LOCKED: 'TRUE' };
+  Object.keys(extra || {}).forEach(function (k) { base[k] = extra[k]; });
+  return base;
+}
+function pushStatus(status) {
+  reset();
+  bridge.handleGetStatus(bundleClient({
+    status: status, caps: {},
+    motion: { moving: false, commandsAllowed: true, reasons: [] }
+  }));
+  return last();
+}
+
+assert.strictEqual(pushStatus(statusWith({})).CLIMATE_ON, 0,
+  'no climate status means off');
+assert.strictEqual(pushStatus(statusWith({ CLIMATE_STATUS_OPERATING_STATUS: 'HEATING' })).CLIMATE_ON, 1,
+  'HEATING is a running state');
+assert.strictEqual(pushStatus(statusWith({ CLIMATE_STATUS_OPERATING_STATUS: 'OFF' })).CLIMATE_ON, 0,
+  'OFF is off');
+assert.strictEqual(
+  pushStatus(statusWith({ CLIMATE_STATUS_REMAINING_RUNTIME: '25' })).CLIMATE_RUNTIME_MIN, 25,
+  'remaining runtime is passed through');
+
+console.log('bridge climate: 4 further assertions passed');
+
+// The owner's vehicle reports CLIMATE_STATUS_OPERATING_STATUS = "OFF" while
+// remote climate is running, so engine state is the usable signal. This is the
+// same key motionState deliberately ignores -- a running engine says nothing
+// about whether the car is MOVING, but everything about whether climate is on.
+assert.strictEqual(
+  pushStatus(statusWith({
+    CLIMATE_STATUS_OPERATING_STATUS: 'OFF',
+    VEHICLE_STATE_TYPE: 'KEY_ON_ENGINE_ON'
+  })).CLIMATE_ON, 1,
+  'a running engine means climate is on, even when the climate key says OFF');
+
+assert.strictEqual(
+  pushStatus(statusWith({
+    CLIMATE_STATUS_OPERATING_STATUS: 'OFF',
+    VEHICLE_STATE_TYPE: 'KEY_ON_ENGINE_OFF'
+  })).CLIMATE_ON, 0,
+  'KEY_ON_ENGINE_OFF must not be read as a running engine');
+
+console.log('bridge climate engine: 2 further assertions passed');
+
+// The exact value the owner's 2018 Discovery reports while remote climate is
+// running, captured from a live dump 2026-07-28:
+//     VEHICLE_STATE_TYPE = ENGINE_ON_REMOTE_START
+//     CLIMATE_STATUS_OPERATING_STATUS = OFF      <- unusable on this vehicle
+//     CLIMATE_STATUS_REMAINING_RUNTIME = 14      <- counts DOWN while running
+// Pinned verbatim so the pattern can never be "tidied" into something that
+// stops matching it.
+var liveClimateOn = pushStatus(statusWith({
+  CLIMATE_STATUS_OPERATING_STATUS: 'OFF',
+  CLIMATE_STATUS_REMAINING_RUNTIME: '14',
+  CLIMATE_STATUS_VENTING_TIME: '30',
+  VEHICLE_STATE_TYPE: 'ENGINE_ON_REMOTE_START'
+}));
+assert.strictEqual(liveClimateOn.CLIMATE_ON, 1,
+  'ENGINE_ON_REMOTE_START must be recognised as climate running');
+assert.strictEqual(liveClimateOn.CLIMATE_RUNTIME_MIN, 14,
+  'remaining runtime counts down while running and is what we show');
+
+console.log('bridge climate live: 2 further assertions passed');
+
+// VENTING_TIME is the configured total; used for display context only.
+var withTotal = pushStatus(statusWith({
+  CLIMATE_STATUS_REMAINING_RUNTIME: '14',
+  CLIMATE_STATUS_VENTING_TIME: '30',
+  VEHICLE_STATE_TYPE: 'ENGINE_ON_REMOTE_START'
+}));
+assert.strictEqual(withTotal.CLIMATE_TOTAL_MIN, 30);
+
+// Deliberately NOT a state signal: remaining below total must not, on its own,
+// mean running. What REMAINING reads just after a stop has never been
+// observed, and a wrong guess there is a permanent false "on".
+assert.strictEqual(
+  pushStatus(statusWith({
+    CLIMATE_STATUS_REMAINING_RUNTIME: '14',
+    CLIMATE_STATUS_VENTING_TIME: '30',
+    VEHICLE_STATE_TYPE: 'KEY_ON_ENGINE_OFF'
+  })).CLIMATE_ON, 0,
+  'a counted-down runtime must not imply running without engine state');
+
+console.log('bridge climate total: 2 further assertions passed');

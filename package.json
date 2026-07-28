@@ -75,7 +75,10 @@
       "CMDS_BLOCKED",
       "CLIMATE_TEMP_C10",
       "STATUS_TEMP_UNIT",
-      "TYRE_UNIT"
+      "TYRE_UNIT",
+      "CLIMATE_ON",
+      "CLIMATE_RUNTIME_MIN",
+      "CLIMATE_TOTAL_MIN"
     ],
     "resources": {
       "media": []

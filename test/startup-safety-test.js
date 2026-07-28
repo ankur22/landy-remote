@@ -60,3 +60,25 @@ assert(
 );
 
 console.log('startup safety: 8 assertions passed');
+
+// Motion must never be restored from the persisted cache. A cached "moving"
+// (or, before the engine-state heuristic was dropped, a cached "idling")
+// made every launch open claiming the vehicle was in motion.
+assert(
+  /s_state = loaded;[\s\S]*s_state\.in_motion = false;/.test(stateSource),
+  'prv_load_cache must clear in_motion after restoring the cache'
+);
+assert(
+  /s_state = loaded;[\s\S]*s_state\.cmds_blocked = true;/.test(stateSource),
+  'a restored cache must never imply commands are allowed'
+);
+
+// A running engine is not a moving vehicle. Remote climate starts the engine,
+// so treating engine-on as motion blocked the very command that stops it.
+var jlrSource = fs.readFileSync(path.join(root, 'src/pkjs/jlr.js'), 'utf8');
+assert(
+  !/ENGINE_ON\|ENGINE_RUNNING/.test(jlrSource),
+  'motionState must not infer motion from a running engine'
+);
+
+console.log('startup safety: 3 further assertions passed');

@@ -203,6 +203,18 @@
         </label>
       </div>
 
+      <label class="check">
+        <input id="analytics" type="checkbox" checked>
+        <span>
+          Send anonymous usage statistics
+          <span class="hint">Counts which features are used, whether commands
+          succeed, and the country the app is used in (from your connection, not
+          your location). Never your vehicle, its position, its status, or your
+          account. Helps find bugs like commands failing on particular
+          vehicles.</span>
+        </span>
+      </label>
+
       <div class="actions">
         <button class="primary" type="submit">Save and sign in</button>
         <button class="secondary" id="logout" type="button">Sign out and clear saved data</button>
@@ -226,6 +238,7 @@
       var distanceUnit = document.getElementById('distance-unit');
       var tempUnit = document.getElementById('temp-unit');
       var tyreUnit = document.getElementById('tyre-unit');
+      var analyticsEl = document.getElementById('analytics');
       var signinArea = document.getElementById('signin-area');
       var signedInNote = document.getElementById('signed-in-note');
       var showSignin = document.getElementById('show-signin');
@@ -251,6 +264,8 @@
       selectValue(distanceUnit, param('d'));
       selectValue(tempUnit, param('t'));
       selectValue(tyreUnit, param('p'));
+      // 'a=0' means previously opted out; reflect that rather than re-ticking.
+      if (param('a') === '0') analyticsEl.checked = false;
 
       var alreadySignedIn = param('si') === '1';
       var pinAlreadyStored = param('pin') === '1';
@@ -303,7 +318,8 @@
           clearPin: !storePin.checked,
           distanceUnit: distanceUnit.value,
           tempUnit: tempUnit.value,
-          tyreUnit: tyreUnit.value
+          tyreUnit: tyreUnit.value,
+          analytics: analyticsEl.checked
         });
       });
       document.getElementById('logout').addEventListener('click', function () {

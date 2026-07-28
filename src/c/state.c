@@ -21,6 +21,8 @@ static void prv_defaults(void) {
   s_state.adblue_km = -1;
   s_state.odometer = -1;
   s_state.climate_temp_c10 = 210;   // 21.0 C until the user picks
+  s_state.climate_runtime_min = -1;
+  s_state.climate_total_min = -1;
   s_state.tyre_fl_kpa = -1;
   s_state.tyre_fr_kpa = -1;
   s_state.tyre_rl_kpa = -1;
@@ -49,6 +51,16 @@ static void prv_load_cache(void) {
   }
   loaded.vehicle_name[sizeof(loaded.vehicle_name) - 1] = '\0';
   s_state = loaded;
+  // Motion is a LIVE signal, never a cached one. Restoring it meant that if
+  // the app last saw the car moving -- or, before the engine-state heuristic
+  // was removed, merely idling after a remote start -- every subsequent launch
+  // opened claiming "Vehicle in motion" until fresh data arrived, with no way
+  // for the user to tell it was stale. Commands are gated separately by
+  // s_session_stationary_verified, which prv_defaults() has already cleared,
+  // so clearing this loses no safety: it only stops the app asserting
+  // something about the present that it learned in the past.
+  s_state.in_motion = false;
+  s_state.cmds_blocked = true;
   APP_LOG(APP_LOG_LEVEL_DEBUG, "state: loaded cached status, locked=%d fuel=%d",
           s_state.locked, s_state.fuel_perc);
 }
@@ -135,6 +147,11 @@ void state_apply_status_update(DictionaryIterator *iter) {
   s_state.distance_in_km = prv_bool_or(iter, MESSAGE_KEY_STATUS_DISTANCE_UNIT, s_state.distance_in_km);
   s_state.temp_in_f = prv_bool_or(iter, MESSAGE_KEY_STATUS_TEMP_UNIT, s_state.temp_in_f);
   s_state.tyre_unit = prv_int_or(iter, MESSAGE_KEY_TYRE_UNIT, s_state.tyre_unit);
+  s_state.climate_on = prv_bool_or(iter, MESSAGE_KEY_CLIMATE_ON, s_state.climate_on);
+  s_state.climate_runtime_min = prv_int_or(iter, MESSAGE_KEY_CLIMATE_RUNTIME_MIN,
+                                           s_state.climate_runtime_min);
+  s_state.climate_total_min = prv_int_or(iter, MESSAGE_KEY_CLIMATE_TOTAL_MIN,
+                                         s_state.climate_total_min);
   s_state.received_at = time(NULL);
 
   Tuple *name_tuple = dict_find(iter, MESSAGE_KEY_STATUS_VEHICLE_NAME);
