@@ -1,6 +1,6 @@
 {
   "name": "landy-remote",
-  "author": "MakeAwesomeHappen",
+  "author": "ankur22",
   "version": "1.0.0",
   "keywords": [
     "pebble-app"
@@ -81,7 +81,14 @@
       "CLIMATE_TOTAL_MIN"
     ],
     "resources": {
-      "media": []
+      "media": [
+        {
+          "type": "png",
+          "name": "IMAGE_MENU_ICON",
+          "file": "images/menu_icon.png",
+          "menuIcon": true
+        }
+      ]
     }
   }
 }

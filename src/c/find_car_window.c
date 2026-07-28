@@ -81,7 +81,13 @@ static void prv_arrow_update_proc(Layer *layer, GContext *ctx) {
   gpath_rotate_to(s_arrow_path, angle_trig);
   gpath_move_to(s_arrow_path, center);
 
-  bool uncertain = (pos->quality != 0) || !s_have_heading || s_compass_status != CompassStatusCalibrated;
+  // "Unknown" quality is the NORMAL case on this vehicle -- positionQuality
+  // never resolves to good/poor -- so treating it as uncertain painted the
+  // arrow in the warning colour permanently. A warning that is always on is
+  // not a warning; it just teaches the user to ignore the colour. Only a
+  // reported-poor fix, or a stale one, counts.
+  bool uncertain = (pos->quality == 1) || (pos->days_since_fix > 7) ||
+                   !s_have_heading || s_compass_status != CompassStatusCalibrated;
   graphics_context_set_fill_color(ctx, uncertain ?
     PBL_IF_COLOR_ELSE(GColorOrange, GColorBlack) : PBL_IF_COLOR_ELSE(GColorDarkGreen, GColorBlack));
   gpath_draw_filled(ctx, s_arrow_path);
@@ -127,7 +133,7 @@ static void prv_refresh(void) {
   // Surface uncertainty rather than hiding it -- a confidently-wrong arrow
   // is worse than an honestly-hedged one (see the research doc's
   // find-my-car section and TU_STATUS_DAYS_SINCE_GNSS_FIX).
-  const char *quality_str = (pos->quality == 0) ? "good" : (pos->quality == 1) ? "poor" : "unknown";
+
 
   // The arrow is only meaningful if the compass is actually working. Without
   // a heading we would silently draw the bearing relative to screen-up, which
@@ -144,10 +150,19 @@ static void prv_refresh(void) {
     return;
   }
 
-  if (pos->days_since_fix > 0) {
-    snprintf(s_quality_buf, sizeof(s_quality_buf), "Fix: %s, %d day(s) old", quality_str, pos->days_since_fix);
+  // Say something the user can act on. "Fix: unknown" is the vehicle failing
+  // to report a quality value -- it tells the reader nothing except that the
+  // app is unsure of itself. Age is the fact that actually matters: a
+  // days-old position means the car may have been moved since.
+  if (pos->quality == 1) {
+    snprintf(s_quality_buf, sizeof(s_quality_buf),
+             "Poor GPS fix from the car%s",
+             pos->days_since_fix > 0 ? ", and days old" : "");
+  } else if (pos->days_since_fix > 1) {
+    snprintf(s_quality_buf, sizeof(s_quality_buf),
+             "Car's position is %d days old", pos->days_since_fix);
   } else {
-    snprintf(s_quality_buf, sizeof(s_quality_buf), "Fix: %s", quality_str);
+    snprintf(s_quality_buf, sizeof(s_quality_buf), "Last reported position");
   }
   text_layer_set_text(s_quality_layer, s_quality_buf);
 

@@ -63,9 +63,9 @@ static void prv_render(void) {
   text_layer_set_text(s_hint_layer, "UP/DOWN adjust\nSELECT start, BACK cancel");
   if (st->temp_in_f) {
     int f10 = (s_temp_c10 * 9) / 5 + 320;
-    snprintf(s_temp_buf, sizeof(s_temp_buf), "%d F", (f10 + 5) / 10);
+    snprintf(s_temp_buf, sizeof(s_temp_buf), "%d\u00B0F", (f10 + 5) / 10);
   } else {
-    snprintf(s_temp_buf, sizeof(s_temp_buf), "%d.%d C",
+    snprintf(s_temp_buf, sizeof(s_temp_buf), "%d.%d\u00B0C",
              s_temp_c10 / 10, s_temp_c10 % 10);
   }
   text_layer_set_text(s_temp_layer, s_temp_buf);
