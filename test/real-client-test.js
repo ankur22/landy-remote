@@ -392,6 +392,30 @@ geoBundle('geolocation stale timestamp fails closed', {
   assert.strictEqual(bundle.motion.unknown, true);
 });
 
+// A fresh GPS fix can read slightly INTO THE FUTURE relative to Date.now(),
+// because iOS stamps it from the location subsystem rather than the JS clock.
+// Rejecting that outright would strand the user on "Checking safety" with all
+// controls dead for no real reason. Found live: the real-path harness produced
+// a fix a millisecond or two ahead and the gate closed.
+geoBundle('geolocation tolerates a small future-dated fix (clock skew)', {
+  getCurrentPosition: function (ok) {
+    // 500 ms ahead of the reference clock -- plausible skew, must be accepted.
+    ok(geoPosition(0, Date.parse('2026-07-28T10:00:00.500Z')));
+  }
+}, undefined, function (bundle) {
+  assert.strictEqual(bundle.motion.moving, false);
+  assert.strictEqual(bundle.motion.commandsAllowed, true);
+});
+
+// ...but a fix dated far ahead means a clock we cannot trust, so still refuse.
+geoBundle('geolocation still fails closed on a far-future fix', {
+  getCurrentPosition: function (ok) {
+    ok(geoPosition(0, Date.parse('2026-07-28T10:00:30Z')));   // 30s ahead
+  }
+}, 0, function (bundle) {
+  assert.strictEqual(bundle.motion.unknown, true);
+});
+
 geoBundle('geolocation null speed fails closed', {
   getCurrentPosition: function (ok) { ok(geoPosition(null)); }
 }, 0, function (bundle) {

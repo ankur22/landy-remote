@@ -11,6 +11,14 @@
   var SELECTED_VIN_KEY = 'jlr_selected_vin';
   var PIN_KEY = 'jlr_pin';
   var PHONE_FIX_MAX_AGE_MS = 10000;
+  // A GPS fix timestamp does not come from the same clock as Date.now() -- iOS
+  // stamps it from the location subsystem -- so a fresh fix can legitimately
+  // read a few milliseconds INTO THE FUTURE relative to our clock. Rejecting
+  // every negative age would then intermittently report motion_unknown and
+  // strand the user on "Checking safety" with all controls dead, for no real
+  // reason. Tolerate small skew; still reject fixes dated meaningfully ahead,
+  // which would indicate a genuinely untrustworthy clock.
+  var PHONE_FIX_MAX_SKEW_MS = 2000;
   var BUNDLE_REUSE_MS = 10000;
 
   function typedError(code, message, cause) {
@@ -105,7 +113,8 @@
       var age = isNumber(timestamp) ? currentTime - timestamp : null;
       if (!coords || !isNumber(coords.latitude) || !isNumber(coords.longitude) ||
           !isNumber(coords.speed) || coords.speed < 0 ||
-          age === null || age < 0 || age > PHONE_FIX_MAX_AGE_MS) {
+          age === null || age < -PHONE_FIX_MAX_SKEW_MS ||
+          age > PHONE_FIX_MAX_AGE_MS) {
         finish(typedError('motion_unknown', 'Phone speed is unavailable.'));
         return;
       }
