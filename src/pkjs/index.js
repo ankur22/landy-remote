@@ -704,6 +704,11 @@ Pebble.addEventListener('ready', function () {
   log('pkjs ready, backend=' + (USE_MOCK ? 'mock' : 'real'));
   SELFTEST.runSelfTests();
 
+  // The brick detector's baseline. Without it the dashboard cannot tell "JLR
+  // broke and commands stopped" from "nobody opened the app" -- opens are the
+  // denominator that gives the command count meaning.
+  analytics.appOpen();
+
   Pebble.addEventListener('appmessage', function (e) {
     var cmd = e.payload['CMD'];
     if (cmd === undefined || cmd === null) {

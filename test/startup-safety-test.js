@@ -107,3 +107,24 @@ assert(
 );
 
 console.log('startup safety: 6 further assertions passed');
+
+// Every analytics event the dashboard depends on must actually be WIRED.
+// app_open shipped missing: the call was added by a string replace whose
+// anchor did not match, which failed silently, and no test referenced it. The
+// result was a live dashboard with no denominator -- unable to distinguish
+// "JLR broke and commands stopped" from "nobody opened the app".
+var bridgeSource = fs.readFileSync(path.join(root, 'src/pkjs/index.js'), 'utf8');
+[
+  ['analytics.appOpen(', 'app_open -- the brick detector baseline'],
+  ['analytics.command(', 'command outcomes'],
+  ['analytics.safetyGate(', 'safety gate reasons'],
+  ['analytics.capability(', 'vehicle capabilities'],
+  ['analytics.featureUse(', 'feature use']
+].forEach(function (pair) {
+  assert(
+    bridgeSource.indexOf(pair[0]) !== -1,
+    'index.js must call ' + pair[0] + ' -- ' + pair[1] + ' is otherwise never sent'
+  );
+});
+
+console.log('startup safety: 5 analytics wiring assertions passed');
