@@ -9,6 +9,9 @@
   var CONFIG_URL = 'https://ankur22.github.io/landy-remote/config/';
   var SELECTED_VIN_KEY = 'jlr_selected_vin';
   var PIN_KEY = 'jlr_pin';
+  var DISTANCE_UNIT_KEY = 'jlr_distance_unit';
+  var TEMP_UNIT_KEY = 'jlr_temp_unit';
+  var TYRE_UNIT_KEY = 'jlr_tyre_unit';
 
   function typedError(code, message, cause) {
     var error = new Error(message);
@@ -119,6 +122,13 @@
             vin = selectVehicle(vehicles, payload.vin);
             storageSet(storage, SELECTED_VIN_KEY, vin);
             storageSet(storage, PIN_KEY, payload.storePin === true ? pin : null);
+            // Display preference only -- no effect on what we request from JLR.
+            storageSet(storage, DISTANCE_UNIT_KEY,
+              payload.distanceUnit === 'km' ? 'km' : 'miles');
+            storageSet(storage, TEMP_UNIT_KEY, payload.tempUnit === 'f' ? 'f' : 'c');
+            storageSet(storage, TYRE_UNIT_KEY,
+              (payload.tyreUnit === 'bar' || payload.tyreUnit === 'psi') ?
+                payload.tyreUnit : 'kpa');
           } catch (err) {
             callback(err);
             return;

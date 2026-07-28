@@ -15,6 +15,7 @@ typedef enum {
   CMD_HONK = 4,
   CMD_REFRESH = 5,
   CMD_REMOTE_START = 6,
+  CMD_REMOTE_STOP = 8,
   CMD_GET_POSITION = 7,
 } Cmd;
 
@@ -45,3 +46,7 @@ void comm_set_error_callback(void (*cb)(const char *message));
 // coalesced or dropped for queue space -- they have real side effects and
 // each must be individually acknowledged.
 void comm_send_cmd(Cmd cmd);
+
+// Same, but carries a target cabin temperature in TENTHS of a degree Celsius
+// (215 = 21.5 C). Only CMD_REMOTE_START uses it; pass -1 for "no preference".
+void comm_send_cmd_with_temp(Cmd cmd, int temp_c10);

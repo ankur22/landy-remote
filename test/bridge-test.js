@@ -82,27 +82,43 @@ assert.strictEqual(typeof listeners.showConfiguration, 'function',
 assert.strictEqual(typeof listeners.webviewclosed, 'function',
   'production bridge must handle configuration responses');
 
+// Read-only data is now sent even while commands are blocked (owner's
+// decision 2026-07-28). What must remain true is that CMDS_BLOCKED is set, so
+// the watch draws no action bar and every handler refuses.
 reset();
 bridge.handleGetStatus(bundleClient({
-  status: { SECRET: 'must not cross bridge' },
+  status: { DOOR_IS_ALL_DOORS_LOCKED: 'TRUE', FUEL_LEVEL_PERC: '80' },
   caps: {},
   motion: { moving: true, commandsAllowed: false, reasons: ['moving'] }
 }));
-assert.deepStrictEqual(last(), {
-  MSG_TYPE: 1,
-  STATUS_IN_MOTION: 1
-});
+assert.strictEqual(last().MSG_TYPE, 1);
+assert.strictEqual(last().CMDS_BLOCKED, 1, 'commands must be blocked while moving');
+assert.strictEqual(last().STATUS_IN_MOTION, 1);
+assert.strictEqual(last().STATUS_LOCKED, 1, 'read-only data must still be sent');
+assert.strictEqual(last().STATUS_FUEL_PERC, 80);
 
+// "unknown" motion is NOT the same as "moving": commands are still blocked,
+// but the watch must not claim the vehicle is in motion when we simply could
+// not tell -- that was indistinguishable from a broken app on real hardware.
+reset();
+bridge.handleGetStatus(bundleClient({
+  status: { DOOR_IS_ALL_DOORS_LOCKED: 'TRUE' },
+  caps: {},
+  motion: { moving: true, unknown: true, commandsAllowed: false, reasons: ['no gps'] }
+}));
+assert.strictEqual(last().CMDS_BLOCKED, 1);
+assert.strictEqual(last().STATUS_IN_MOTION, 0,
+  'an unknown motion state must not be reported as in-motion');
+
+// Position is a read and is served regardless of the command gate.
 reset();
 bridge.handleGetPosition(bundleClient({
-  status: { SECRET: 'must not cross bridge' },
+  status: {},
   caps: {},
-  motion: { moving: true, commandsAllowed: false, reasons: ['unknown'] }
+  motion: { moving: true, commandsAllowed: false, reasons: ['moving'] }
 }));
-assert.deepStrictEqual(last(), {
-  MSG_TYPE: 3,
-  STATUS_IN_MOTION: 1
-});
+assert.strictEqual(last().MSG_TYPE, 3);
+assert.strictEqual(last().STATUS_IN_MOTION, 1);
 
 var commandIds = [2, 3, 4, 5, 6];
 commandIds.forEach(function (commandId) {
@@ -155,3 +171,60 @@ assert.strictEqual(last().STATUS_LOCKED, 1);
 assert.strictEqual(last().STATUS_VEHICLE_NAME, '2024 Defender');
 
 console.log('bridge: 23 assertions passed');
+
+// ---------------------------------------------------------------------------
+// Distance units. DISTANCE_TO_EMPTY_FUEL is KILOMETRES but was previously fed
+// straight into a field the watch labelled "mi", overstating range by ~60%
+// (709 km shown as "709 mi"). All conversion happens in pkjs so the two sides
+// can never disagree about units.
+// ---------------------------------------------------------------------------
+// pkjs localStorage is absent under plain node; distanceUnit() falls back to
+// miles. Provide a minimal one so both branches can be exercised.
+var unitStore = {};
+global.localStorage = {
+  getItem: function (k) {
+    return Object.prototype.hasOwnProperty.call(unitStore, k) ? unitStore[k] : null;
+  },
+  setItem: function (k, v) { unitStore[k] = String(v); },
+  removeItem: function (k) { delete unitStore[k]; }
+};
+
+var unitStatus = {
+  DOOR_IS_ALL_DOORS_LOCKED: 'TRUE',
+  DISTANCE_TO_EMPTY_FUEL: '709',
+  ODOMETER: '86126000',
+  ODOMETER_MILES: '53516',
+  EXT_KILOMETERS_TO_SERVICE: '22084'
+};
+
+reset();
+global.localStorage.setItem('jlr_distance_unit', 'miles');
+bridge.handleGetStatus(bundleClient({
+  status: unitStatus, caps: {},
+  motion: { moving: false, commandsAllowed: true, reasons: [] }
+}));
+assert.strictEqual(last().STATUS_DISTANCE_UNIT, 0, 'miles selected');
+assert.strictEqual(last().STATUS_RANGE_MILES, 441, '709 km is 441 mi, not 709');
+assert.strictEqual(last().STATUS_ODOMETER, 53516, 'uses ODOMETER_MILES directly');
+
+reset();
+global.localStorage.setItem('jlr_distance_unit', 'km');
+bridge.handleGetStatus(bundleClient({
+  status: unitStatus, caps: {},
+  motion: { moving: false, commandsAllowed: true, reasons: [] }
+}));
+assert.strictEqual(last().STATUS_DISTANCE_UNIT, 1, 'km selected');
+assert.strictEqual(last().STATUS_RANGE_MILES, 709, 'km passes through unconverted');
+assert.strictEqual(last().STATUS_ODOMETER, 86126, 'ODOMETER metres -> km');
+assert.strictEqual(last().SERVICE_KM, 22084);
+
+// Unknown (-1) must survive conversion, or it becomes a real-looking -0.6.
+reset();
+bridge.handleGetStatus(bundleClient({
+  status: { DOOR_IS_ALL_DOORS_LOCKED: 'TRUE' }, caps: {},
+  motion: { moving: false, commandsAllowed: true, reasons: [] }
+}));
+assert.strictEqual(last().STATUS_RANGE_MILES, -1, 'unknown range stays -1');
+assert.strictEqual(last().STATUS_ODOMETER, -1, 'unknown odometer stays -1');
+
+console.log('bridge units: 9 further assertions passed');

@@ -30,18 +30,19 @@ static void prv_window_load(Window *window) {
   text_layer_set_text(s_title_layer, "Unlock car?");
   layer_add_child(root, text_layer_get_layer(s_title_layer));
 
-  s_body_layer = text_layer_create(GRect(8, 48, bounds.size.w - 16, bounds.size.h - 90));
+  s_body_layer = text_layer_create(GRect(6, 46, bounds.size.w - 12, bounds.size.h - 96));
   text_layer_set_font(s_body_layer, fonts_get_system_font(FONT_KEY_GOTHIC_18));
   text_layer_set_text_alignment(s_body_layer, GTextAlignmentCenter);
   text_layer_set_overflow_mode(s_body_layer, GTextOverflowModeWordWrap);
   text_layer_set_text(s_body_layer,
-    "Opens the driver's door only. Re-locks automatically in about 45 seconds.");
+    "Driver's door only.\nRelocks after ~45s.");
   layer_add_child(root, text_layer_get_layer(s_body_layer));
 
-  s_hint_layer = text_layer_create(GRect(8, bounds.size.h - 30, bounds.size.w - 16, 26));
+  s_hint_layer = text_layer_create(GRect(4, bounds.size.h - 44, bounds.size.w - 8, 40));
   text_layer_set_font(s_hint_layer, fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD));
+  text_layer_set_overflow_mode(s_hint_layer, GTextOverflowModeWordWrap);
   text_layer_set_text_alignment(s_hint_layer, GTextAlignmentCenter);
-  text_layer_set_text(s_hint_layer, "SELECT to confirm, BACK to cancel");
+  text_layer_set_text(s_hint_layer, "SELECT confirm\nBACK cancel");
   layer_add_child(root, text_layer_get_layer(s_hint_layer));
 }
 

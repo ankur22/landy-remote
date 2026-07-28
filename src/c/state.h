@@ -42,7 +42,16 @@ typedef struct {
   char vehicle_name[32];
   bool doors_open;
   bool windows_open;
-  bool in_motion;
+  bool in_motion;         // display hint only -- the car is believed to be moving
+  // Whether the phone layer will accept a command right now. Separate from
+  // in_motion: read-only data is always shown, but nothing may ACTUATE the
+  // vehicle without positive proof it is stationary.
+  bool cmds_blocked;
+  int odometer;           // in the user's chosen unit; -1 = unknown
+  bool distance_in_km;    // false = miles
+  bool temp_in_f;         // false = Celsius
+  int tyre_unit;          // 0 = kPa, 1 = bar, 2 = psi
+  int climate_temp_c10;   // last chosen remote-climate target; -1 = unset
 
   // Freshness: the phone reports "N seconds old" at message-construction
   // time; we store our own receipt time so the on-screen "updated Xm ago"
@@ -94,6 +103,11 @@ bool state_is_session_stationary_verified(void);
 // Returns the live "updated N seconds ago" value, accounting for elapsed
 // wall-clock time since the value was received.
 int state_ago_seconds(void);
+
+// Last cabin temperature chosen for remote climate, in tenths of a degree C.
+// Persisted so a repeat start defaults to what you picked last time.
+int state_get_climate_temp_c10(void);
+void state_set_climate_temp_c10(int temp_c10);
 
 void state_apply_status_update(DictionaryIterator *iter);
 void state_apply_position_update(DictionaryIterator *iter);

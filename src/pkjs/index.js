@@ -33,6 +33,7 @@ var CMD_HONK = 4;
 var CMD_REFRESH = 5;
 var CMD_REMOTE_START = 6;
 var CMD_GET_POSITION = 7;
+var CMD_REMOTE_STOP = 8;
 
 // ---------------------------------------------------------- MSG_TYPE values
 var MSG_STATUS_UPDATE = 1;
@@ -60,13 +61,15 @@ CMD_TO_SERVICE[CMD_UNLOCK] = 'RDU';
 CMD_TO_SERVICE[CMD_HONK] = 'HBLF';
 CMD_TO_SERVICE[CMD_REFRESH] = 'VHS';
 CMD_TO_SERVICE[CMD_REMOTE_START] = 'REON';
+CMD_TO_SERVICE[CMD_REMOTE_STOP] = 'REOFF';
 
 var SUCCESS_MESSAGE = {};
 SUCCESS_MESSAGE[CMD_LOCK] = 'Locked.';
 SUCCESS_MESSAGE[CMD_UNLOCK] = "Unlocked - driver's door only. Re-locks automatically in 45s.";
 SUCCESS_MESSAGE[CMD_HONK] = 'Horn and lights activated.';
 SUCCESS_MESSAGE[CMD_REFRESH] = 'Status refreshed from vehicle.';
-SUCCESS_MESSAGE[CMD_REMOTE_START] = 'Engine started.';
+SUCCESS_MESSAGE[CMD_REMOTE_START] = 'Climate started.';
+SUCCESS_MESSAGE[CMD_REMOTE_STOP] = 'Climate stopped.';
 
 function log(msg) {
   console.log('JLR-bridge: ' + msg);
@@ -98,6 +101,113 @@ function windowsOpen(status) {
     'FRONT_LEFT_STATUS', 'FRONT_RIGHT_STATUS', 'REAR_LEFT_STATUS', 'REAR_RIGHT_STATUS'
   ]);
   return w || status.IS_SUNROOF_OPEN === 'TRUE';
+}
+
+// ------------------------------------------------------------- distance units
+//
+// The JLR API mixes units in one payload and only sometimes says so in the key
+// name. Verified against the owner's vehicle (2026-07-28):
+//
+//   DISTANCE_TO_EMPTY_FUEL                    kilometres  (no suffix!)
+//   EXT_KILOMETERS_TO_SERVICE                 kilometres
+//   EXT_EXHAUST_FLUID_DISTANCE_TO_SERVICE_KM  kilometres
+//   ODOMETER                                  METRES      (86126000)
+//   ODOMETER_MILES                            miles       (53516)
+//
+// 86126000 m = 86126 km = 53517 mi, which is how ODOMETER/ODOMETER_MILES were
+// confirmed against each other. All conversion happens here; the watch only
+// formats what it is handed, so units can never drift between the two sides.
+var KM_PER_MILE = 1.609344;
+var DISTANCE_UNIT_KEY = 'jlr_distance_unit';
+var TEMP_UNIT_KEY = 'jlr_temp_unit';
+var TYRE_UNIT_KEY = 'jlr_tyre_unit';
+
+function distanceUnit() {
+  try {
+    var stored = (typeof localStorage !== 'undefined' && localStorage) ?
+      localStorage.getItem(DISTANCE_UNIT_KEY) : null;
+    return stored === 'km' ? 'km' : 'miles';   // miles is the default
+  } catch (e) {
+    return 'miles';
+  }
+}
+
+// Convert a kilometres value to the display unit. -1 means "unknown" and must
+// survive untouched, or unknowns become a real-looking -0.6.
+// Temperature unit is a DISPLAY preference only. Everything on the wire, and
+// everything sent to the car, stays Celsius -- the vehicle's RCC scale is
+// defined in Celsius, so converting anywhere but at the point of display would
+// mean two conversions to keep in step.
+function tempUnitIsF() {
+  try {
+    var stored = (typeof localStorage !== 'undefined' && localStorage) ?
+      localStorage.getItem(TEMP_UNIT_KEY) : null;
+    return stored === 'f';
+  } catch (e) {
+    return false;
+  }
+}
+
+// ------------------------------------------------------------- tyre pressure
+//
+// The RAW SCALE DIFFERS BY VEHICLE GENERATION. The owner's 2018 Discovery
+// reports plain kPa (223), but an L405/L663 reports kPa*10 (2470) -- confirmed
+// in willbeeching/ha-jlr-incontrol's _tyre_kpa(). Real pressures sit around
+// 180-350 kPa, so anything above 1000 is the *10 scale. Getting this wrong
+// shows "2470 kPa" to another user, which is why it is normalised here rather
+// than assumed from one car.
+function tyreKpa(raw) {
+  var n = parseFloat(raw);
+  if (isNaN(n) || n <= 0) {
+    log('tyre: raw=' + JSON.stringify(raw) + ' is not a positive number');
+    return -1;
+  }
+  // Only normalisation, no plausibility clamp. The raw scale genuinely differs
+  // by model generation (plain kPa on this Discovery, kPa*10 on an L405), so
+  // rescaling is necessary -- but the clamp I added on top of it was inferred
+  // from another project's comment about other vehicles, and rejecting a real
+  // reading shows "--" for a pressure the car reported perfectly well. Trust
+  // the vehicle; it knows its own tyres better than a guessed range does.
+  if (n > 1000) n = n / 10;
+  return n;
+}
+
+function tyreUnit() {
+  try {
+    var stored = (typeof localStorage !== 'undefined' && localStorage) ?
+      localStorage.getItem(TYRE_UNIT_KEY) : null;
+    return (stored === 'bar' || stored === 'psi') ? stored : 'kpa';
+  } catch (e) {
+    return 'kpa';
+  }
+}
+
+// Returns TENTHS of the display unit, so the watch can show one decimal for
+// bar without needing floats. -1 stays -1.
+function tyreDisplayX10(raw, unit) {
+  var kpa = tyreKpa(raw);
+  if (kpa < 0) return -1;
+  if (unit === 'bar') return Math.round(kpa / 100 * 10);
+  if (unit === 'psi') return Math.round(kpa / 6.89476 * 10);
+  return Math.round(kpa * 10);
+}
+
+function convertKm(km, unit) {
+  if (km === null || km === undefined || km < 0) return -1;
+  return unit === 'km' ? Math.round(km) : Math.round(km / KM_PER_MILE);
+}
+
+function odometerFor(status, unit) {
+  if (unit === 'miles') {
+    var mi = toIntOr(status.ODOMETER_MILES, -1);
+    if (mi >= 0) return mi;
+    var m = toIntOr(status.ODOMETER, -1);          // metres
+    return m >= 0 ? Math.round(m / 1000 / KM_PER_MILE) : -1;
+  }
+  var metres = toIntOr(status.ODOMETER, -1);
+  if (metres >= 0) return Math.round(metres / 1000);
+  var miles = toIntOr(status.ODOMETER_MILES, -1);
+  return miles >= 0 ? Math.round(miles * KM_PER_MILE) : -1;
 }
 
 function toIntOr(v, fallback) {
@@ -228,23 +338,51 @@ function handleGetStatus(client) {
       return;
     }
     var dict = {};
+    var locked = safetyLocked(bundle);
     dict['MSG_TYPE'] = MSG_STATUS_UPDATE;
-    dict['STATUS_IN_MOTION'] = safetyLocked(bundle) ? 1 : 0;
 
-    if (safetyLocked(bundle)) {
-      // Per the safety rule: while moving, send NOTHING else. The watch
-      // also independently blanks the screen on this flag, but not sending
-      // the fields at all is defence in depth -- there is nothing sensitive
-      // on the wire to leak even if something downstream misbehaves.
-      log('safety lockdown -- sending status flag only');
-      sendDict(dict, 'status (in-motion)');
-      return;
+    // The gate now separates two things that used to be one.
+    //
+    //   CMDS_BLOCKED -- may we ACTUATE the vehicle? Unchanged and absolute:
+    //     no command goes out unless we have positive proof the car is
+    //     stationary. This is the half with physical consequences.
+    //
+    //   STATUS_IN_MOTION -- is the car believed to be moving? Now only a
+    //     display hint, not a blackout.
+    //
+    // Read-only data is shown either way (owner's decision, 2026-07-28).
+    // Blanking the screen bought nothing safety-wise -- glancing at a fuel
+    // level is not what makes a car dangerous -- while making the app useless
+    // as a passenger, and indistinguishable from broken whenever GPS was
+    // merely uncertain.
+    dict['CMDS_BLOCKED'] = locked ? 1 : 0;
+    dict['STATUS_IN_MOTION'] = (bundle.motion && bundle.motion.moving &&
+      !bundle.motion.unknown) ? 1 : 0;
+
+    if (locked) {
+      var why = (bundle && bundle.motion && bundle.motion.reasons &&
+        bundle.motion.reasons.length) ? bundle.motion.reasons.join('; ') :
+        (bundle ? 'no reason recorded' : 'no bundle');
+      log('commands blocked (' + why + ') -- read-only data still sent');
     }
 
-    var safe = JLR.displaySafeStatus(bundle.status, bundle.motion);
+    // Distance unit is a display preference; all conversion happens here so
+    // the watch only ever formats what it is given.
+    var unit = distanceUnit();
+    dict['STATUS_DISTANCE_UNIT'] = unit === 'km' ? 1 : 0;
+    dict['STATUS_TEMP_UNIT'] = tempUnitIsF() ? 1 : 0;
+
+    var safe = bundle.status || {};
     dict['STATUS_LOCKED'] = safe.DOOR_IS_ALL_DOORS_LOCKED === 'TRUE' ? 1 : 0;
     dict['STATUS_FUEL_PERC'] = toIntOr(safe.FUEL_LEVEL_PERC, -1);
-    dict['STATUS_RANGE_MILES'] = toIntOr(safe.DISTANCE_TO_EMPTY_FUEL, -1);
+    // DISTANCE_TO_EMPTY_FUEL is KILOMETRES. It was previously piped straight
+    // into a field labelled "mi" on the watch, overstating range by ~60% (709
+    // km shown as "709 mi"). Confirmed against willbeeching/ha-jlr-incontrol,
+    // which declares this key's native unit as kilometres.
+    dict['STATUS_RANGE_MILES'] = convertKm(toIntOr(safe.DISTANCE_TO_EMPTY_FUEL, -1), unit);
+    // ODOMETER is METRES; ODOMETER_MILES is miles. Prefer whichever matches
+    // the chosen unit so we never round-trip a conversion unnecessarily.
+    dict['STATUS_ODOMETER'] = odometerFor(safe, unit);
     dict['STATUS_VEHICLE_NAME'] = String(bundle.modelYear || '') + ' ' + String(bundle.vehicleType || 'Vehicle');
     dict['STATUS_DOORS_OPEN'] = doorsOpen(safe) ? 1 : 0;
     dict['STATUS_WINDOWS_OPEN'] = windowsOpen(safe) ? 1 : 0;
@@ -256,34 +394,34 @@ function handleGetStatus(client) {
     dict['CAP_REFRESH'] = capEnum(bundle.caps.VHS);
     dict['CAP_REMOTE_START'] = capEnum(bundle.caps.REON);
 
-    dict['TYRE_FL_KPA'] = toIntOr(safe.TYRE_PRESSURE_FRONT_LEFT, -1);
-    dict['TYRE_FR_KPA'] = toIntOr(safe.TYRE_PRESSURE_FRONT_RIGHT, -1);
-    dict['TYRE_RL_KPA'] = toIntOr(safe.TYRE_PRESSURE_REAR_LEFT, -1);
-    dict['TYRE_RR_KPA'] = toIntOr(safe.TYRE_PRESSURE_REAR_RIGHT, -1);
-    dict['SERVICE_KM'] = toIntOr(safe.EXT_KILOMETERS_TO_SERVICE, -1);
-    dict['ADBLUE_KM'] = toIntOr(safe.EXT_EXHAUST_FLUID_DISTANCE_TO_SERVICE_KM, -1);
+    var tUnit = tyreUnit();
+    dict['TYRE_UNIT'] = tUnit === 'bar' ? 1 : (tUnit === 'psi' ? 2 : 0);
+    log('tyre raw: FL=' + JSON.stringify(safe.TYRE_PRESSURE_FRONT_LEFT) +
+        ' FR=' + JSON.stringify(safe.TYRE_PRESSURE_FRONT_RIGHT) +
+        ' unit=' + tUnit);
+    dict['TYRE_FL_KPA'] = tyreDisplayX10(safe.TYRE_PRESSURE_FRONT_LEFT, tUnit);
+    dict['TYRE_FR_KPA'] = tyreDisplayX10(safe.TYRE_PRESSURE_FRONT_RIGHT, tUnit);
+    dict['TYRE_RL_KPA'] = tyreDisplayX10(safe.TYRE_PRESSURE_REAR_LEFT, tUnit);
+    dict['TYRE_RR_KPA'] = tyreDisplayX10(safe.TYRE_PRESSURE_REAR_RIGHT, tUnit);
+    dict['SERVICE_KM'] = convertKm(toIntOr(safe.EXT_KILOMETERS_TO_SERVICE, -1), unit);
+    dict['ADBLUE_KM'] = convertKm(toIntOr(safe.EXT_EXHAUST_FLUID_DISTANCE_TO_SERVICE_KM, -1), unit);
     dict['OIL_WARN'] = boolField(safe.EXT_OIL_LEVEL_WARN);
     dict['BRAKE_FLUID_WARN'] = boolField(safe.BRAKE_FLUID_WARN);
     dict['COOLANT_WARN'] = boolField(safe.ENG_COOLANT_LEVEL_WARN);
 
-    sendDict(dict, 'status');
+    sendDict(dict, locked ? 'status (commands blocked)' : 'status');
   });
 }
 
 function handleGetPosition(client, motionBlockedCb) {
-  // Position must be treated the same as status for the motion rule --
-  // find-my-car is exactly the kind of "second look" the safety rule exists
-  // to prevent while the vehicle might be in motion.
+  // Find-my-car is a READ: it reports where the car is, it does not touch the
+  // car. It therefore follows the read rule, not the command rule, and is
+  // served whether or not commands are currently blocked. The in-motion flag
+  // still rides along so the screen can say the position is moving and
+  // therefore stale.
   client.getBundle(function (err, bundle) {
     if (err) {
       sendError(userMessageForError(err, 'Could not reach vehicle.'));
-      return;
-    }
-    if (safetyLocked(bundle)) {
-      var lockDict = {};
-      lockDict['MSG_TYPE'] = MSG_POSITION_UPDATE;
-      lockDict['STATUS_IN_MOTION'] = 1;
-      sendDict(lockDict, 'position (in-motion)');
       return;
     }
     client.getPosition(function (err2, pos) {
@@ -293,7 +431,8 @@ function handleGetPosition(client, motionBlockedCb) {
       }
       var dict = {};
       dict['MSG_TYPE'] = MSG_POSITION_UPDATE;
-      dict['STATUS_IN_MOTION'] = 0;
+      dict['STATUS_IN_MOTION'] = (bundle.motion && bundle.motion.moving &&
+        !bundle.motion.unknown) ? 1 : 0;
       dict['POS_HAS_FIX'] = pos.hasFix ? 1 : 0;
       dict['POS_DISTANCE_M'] = pos.distanceM;
       dict['POS_BEARING_DEG'] = pos.bearingDeg;
@@ -307,7 +446,7 @@ function handleGetPosition(client, motionBlockedCb) {
   });
 }
 
-function handleCommand(client, cmd) {
+function handleCommand(client, cmd, climateTempC10) {
   var serviceCode = CMD_TO_SERVICE[cmd];
   if (!serviceCode) {
     sendError('Unknown command.');
@@ -337,11 +476,13 @@ function handleCommand(client, cmd) {
       sendDict(blocked, 'command blocked by safety gate');
       return;
     }
-    prv_send_command(client, cmd, serviceCode);
+    prv_send_command(client, cmd, serviceCode, climateTempC10);
   });
 }
 
-function prv_send_command(client, cmd, serviceCode) {
+function prv_send_command(client, cmd, serviceCode, climateTempC10) {
+  var tempC = (typeof climateTempC10 === 'number' && climateTempC10 > 0) ?
+    (climateTempC10 / 10) : null;
   client.sendCommand(serviceCode, function (err, result) {
     var dict = {};
     dict['MSG_TYPE'] = MSG_CMD_RESULT;
@@ -359,6 +500,8 @@ function prv_send_command(client, cmd, serviceCode) {
       dict['CMD_OUTCOME'] = 3;
       dict['CMD_MESSAGE'] = 'No response - car may be asleep. Try again.';
     }
+    log('command ' + cmd + ' outcome=' + dict['CMD_OUTCOME'] +
+        ' msg="' + dict['CMD_MESSAGE'] + '"');
     sendDict(dict, 'command result');
     // A command that changed vehicle state (or a forced refresh) should be
     // followed by a fresh status push so the status card doesn't sit on
@@ -366,7 +509,7 @@ function prv_send_command(client, cmd, serviceCode) {
     if (cmd === CMD_LOCK || cmd === CMD_UNLOCK || cmd === CMD_REFRESH) {
       handleGetStatus(client);
     }
-  });
+  }, tempC);
 }
 
 Pebble.addEventListener('ready', function () {
@@ -387,8 +530,13 @@ Pebble.addEventListener('ready', function () {
       case CMD_UNLOCK:
       case CMD_HONK:
       case CMD_REFRESH:
-      case CMD_REMOTE_START:
+      case CMD_REMOTE_STOP:
         handleCommand(activeClient, cmd);
+        break;
+      case CMD_REMOTE_START:
+        // The watch picks the cabin target at the moment of use and sends it
+        // with the command, in tenths of a degree C.
+        handleCommand(activeClient, cmd, e.payload['CLIMATE_TEMP_C10']);
         break;
       case CMD_GET_POSITION:
         handleGetPosition(activeClient);

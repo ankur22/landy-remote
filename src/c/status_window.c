@@ -14,7 +14,7 @@
 
 static Window *s_window;
 
-// Normal content (hidden entirely while in_motion).
+// Normal content -- always drawn; only the action bar is gated.
 static TextLayer *s_vehicle_name_layer;
 static TextLayer *s_lock_state_layer;
 static TextLayer *s_fuel_range_layer;
@@ -65,30 +65,38 @@ static CapState prv_up_target_cap(void) {
 
 static void prv_refresh(void) {
   VehicleState *st = state_get();
-  bool lockdown = !state_is_session_stationary_verified() || st->in_motion;
+  // Read-only data is ALWAYS drawn. Only the action bar is gated, and only on
+  // cmds_blocked -- the flag that governs actuating the vehicle. in_motion is
+  // a display hint. (Owner's decision 2026-07-28: blanking the screen bought
+  // no safety and made an uncertain GPS fix look like a broken app.)
+  bool cmds_blocked = !state_is_session_stationary_verified() || st->cmds_blocked;
 
-  layer_set_hidden(text_layer_get_layer(s_vehicle_name_layer), lockdown);
-  layer_set_hidden(text_layer_get_layer(s_lock_state_layer), lockdown);
-  layer_set_hidden(text_layer_get_layer(s_fuel_range_layer), lockdown);
-  layer_set_hidden(text_layer_get_layer(s_alert_layer), lockdown || (!st->doors_open && !st->windows_open));
-  layer_set_hidden(text_layer_get_layer(s_freshness_layer), lockdown);
-  layer_set_hidden(s_divider_layer, lockdown);
-  layer_set_hidden(text_layer_get_layer(s_select_label_layer), lockdown);
-  layer_set_hidden(text_layer_get_layer(s_down_label_layer), lockdown);
-  layer_set_hidden(text_layer_get_layer(s_motion_layer), !lockdown);
-  layer_set_hidden(text_layer_get_layer(s_motion_hint_layer), !lockdown);
+  layer_set_hidden(text_layer_get_layer(s_vehicle_name_layer), false);
+  layer_set_hidden(text_layer_get_layer(s_lock_state_layer), false);
+  layer_set_hidden(text_layer_get_layer(s_fuel_range_layer), false);
+  layer_set_hidden(text_layer_get_layer(s_alert_layer), !st->doors_open && !st->windows_open);
+  layer_set_hidden(text_layer_get_layer(s_freshness_layer), false);
+  layer_set_hidden(s_divider_layer, false);
 
-  bool up_hidden = lockdown || prv_up_target_cap() == CAP_NOT_CAPABLE;
+  // Action bar: hidden entirely while commands are blocked, so nothing invites
+  // a press that would be refused.
+  layer_set_hidden(text_layer_get_layer(s_select_label_layer), cmds_blocked);
+  // Find stays available: it is a read, not a command. Hiding it would
+  // contradict the handler, which now allows it.
+  layer_set_hidden(text_layer_get_layer(s_down_label_layer), false);
+  bool up_hidden = cmds_blocked || prv_up_target_cap() == CAP_NOT_CAPABLE;
   layer_set_hidden(text_layer_get_layer(s_up_label_layer), up_hidden);
 
-  if (lockdown) {
-    bool verified = state_is_session_stationary_verified();
+  // The banner now explains why controls are missing, rather than replacing
+  // the whole screen.
+  layer_set_hidden(text_layer_get_layer(s_motion_layer), !cmds_blocked);
+  layer_set_hidden(text_layer_get_layer(s_motion_hint_layer), !cmds_blocked);
+  if (cmds_blocked) {
     text_layer_set_text(s_motion_layer,
-      verified ? "Vehicle in motion" : "Checking safety");
+      st->in_motion ? "Vehicle in motion" : "Checking safety");
     text_layer_set_text(s_motion_hint_layer,
-      verified ? "Remote features return when the engine is off."
-               : "Remote features stay locked until your phone confirms you are stationary.");
-    return; // nothing else to draw -- see the safety rule in the header
+      st->in_motion ? "Controls return when the vehicle stops."
+                    : "Controls need a location fix confirming you are stationary.");
   }
 
   if (!st->valid) {
@@ -111,7 +119,8 @@ static void prv_refresh(void) {
                : PBL_IF_COLOR_ELSE(GColorRed, GColorBlack));
 
   if (st->fuel_perc >= 0 && st->range_miles >= 0) {
-    snprintf(s_fuel_range_buf, sizeof(s_fuel_range_buf), "Fuel %d%%  %d mi", st->fuel_perc, st->range_miles);
+    snprintf(s_fuel_range_buf, sizeof(s_fuel_range_buf), "Fuel %d%%  %d %s",
+             st->fuel_perc, st->range_miles, st->distance_in_km ? "km" : "mi");
   } else {
     snprintf(s_fuel_range_buf, sizeof(s_fuel_range_buf), "Fuel/range unknown");
   }
@@ -135,8 +144,8 @@ static void prv_refresh(void) {
 
 static void prv_up_click_handler(ClickRecognizerRef recognizer, void *context) {
   VehicleState *st = state_get();
-  if (!state_is_session_stationary_verified() || state_get()->in_motion) {
-    return; // commands refused outright while the vehicle may be moving
+  if (!state_is_session_stationary_verified() || st->cmds_blocked) {
+    return; // commands refused outright unless the car is proven stationary
   }
   CapState cap = prv_up_target_cap();
   if (cap == CAP_NOT_CAPABLE) {
@@ -156,16 +165,15 @@ static void prv_up_click_handler(ClickRecognizerRef recognizer, void *context) {
 }
 
 static void prv_select_click_handler(ClickRecognizerRef recognizer, void *context) {
-  if (!state_is_session_stationary_verified() || state_get()->in_motion) {
-    return;
+  if (!state_is_session_stationary_verified() || state_get()->cmds_blocked) {
+    return; // every entry behind this menu actuates the vehicle
   }
   more_menu_window_push();
 }
 
 static void prv_down_click_handler(ClickRecognizerRef recognizer, void *context) {
-  if (!state_is_session_stationary_verified() || state_get()->in_motion) {
-    return;
-  }
+  // Read-only: find-my-car shows where the car is, it does not touch the car.
+  // Kept available whenever any other read-only data is.
   find_car_window_push();
 }
 
@@ -221,8 +229,8 @@ static void prv_window_load(Window *window) {
     layer_add_child(root, text_layer_get_layer(bar_layers[i]));
   }
 
-  s_motion_layer = text_layer_create(GRect(8, bounds.size.h / 2 - 30, bounds.size.w - 16, 60));
-  text_layer_set_font(s_motion_layer, fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD));
+  s_motion_layer = text_layer_create(GRect(4, 122, bounds.size.w - 8, 24));
+  text_layer_set_font(s_motion_layer, fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD));
   text_layer_set_text_alignment(s_motion_layer, GTextAlignmentCenter);
   text_layer_set_text_color(s_motion_layer, PBL_IF_COLOR_ELSE(GColorRed, GColorBlack));
   text_layer_set_text(s_motion_layer, "Vehicle in motion");
@@ -231,8 +239,8 @@ static void prv_window_load(Window *window) {
   // Without this line the blanked screen reads as a bug -- the user presses
   // buttons, nothing happens, and nothing explains why. Say what is happening
   // and when it ends.
-  s_motion_hint_layer = text_layer_create(GRect(8, bounds.size.h / 2 + 22, bounds.size.w - 16, 70));
-  text_layer_set_font(s_motion_hint_layer, fonts_get_system_font(FONT_KEY_GOTHIC_18));
+  s_motion_hint_layer = text_layer_create(GRect(4, 146, bounds.size.w - 8, 56));
+  text_layer_set_font(s_motion_hint_layer, fonts_get_system_font(FONT_KEY_GOTHIC_14));
   text_layer_set_text_alignment(s_motion_hint_layer, GTextAlignmentCenter);
   text_layer_set_overflow_mode(s_motion_hint_layer, GTextOverflowModeWordWrap);
   text_layer_set_text(s_motion_hint_layer,

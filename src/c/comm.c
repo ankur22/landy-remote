@@ -14,6 +14,9 @@
 
 typedef struct {
   Cmd cmd;
+  // Tenths of a degree Celsius for CMD_REMOTE_START (e.g. 215 = 21.5 C).
+  // -1 means "no preference"; every other command ignores it.
+  int temp_c10;
 } QueuedMsg;
 
 static void (*s_status_cb)(void);
@@ -73,6 +76,9 @@ static void prv_send_head(void) {
   }
 
   dict_write_int32(iter, MESSAGE_KEY_CMD, (int32_t) msg->cmd);
+  if (msg->temp_c10 >= 0) {
+    dict_write_int32(iter, MESSAGE_KEY_CLIMATE_TEMP_C10, (int32_t) msg->temp_c10);
+  }
 
   result = app_message_outbox_send();
   if (result != APP_MSG_OK) {
@@ -80,7 +86,7 @@ static void prv_send_head(void) {
   }
 }
 
-static void prv_push(Cmd cmd) {
+static void prv_push(Cmd cmd, int temp_c10) {
   bool was_empty = (s_queue_count == 0);
 
   if (prv_is_request(cmd)) {
@@ -97,7 +103,9 @@ static void prv_push(Cmd cmd) {
     return;
   }
 
-  s_queue[s_queue_count++].cmd = cmd;
+  s_queue[s_queue_count].cmd = cmd;
+  s_queue[s_queue_count].temp_c10 = temp_c10;
+  s_queue_count++;
 
   if (was_empty) {
     s_retry_count = 0;
@@ -187,5 +195,9 @@ void comm_set_error_callback(void (*cb)(const char *message)) {
 }
 
 void comm_send_cmd(Cmd cmd) {
-  prv_push(cmd);
+  prv_push(cmd, -1);
+}
+
+void comm_send_cmd_with_temp(Cmd cmd, int temp_c10) {
+  prv_push(cmd, temp_c10);
 }

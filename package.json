@@ -69,7 +69,13 @@
       "POS_QUALITY",
       "POS_AGE_SEC",
       "POS_DAYS_SINCE_FIX",
-      "ERROR_MESSAGE"
+      "ERROR_MESSAGE",
+      "STATUS_ODOMETER",
+      "STATUS_DISTANCE_UNIT",
+      "CMDS_BLOCKED",
+      "CLIMATE_TEMP_C10",
+      "STATUS_TEMP_UNIT",
+      "TYRE_UNIT"
     ],
     "resources": {
       "media": []

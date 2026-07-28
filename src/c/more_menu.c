@@ -4,6 +4,7 @@
 
 #include "comm.h"
 #include "command_window.h"
+#include "climate_window.h"
 #include "message_window.h"
 #include "state.h"
 #include "tyre_window.h"
@@ -36,11 +37,20 @@ static void prv_select_callback(int index, void *context) {
     return;
   }
   Cmd cmd = s_item_cmd[index];
+
+  // Remote climate asks for a target temperature first -- that choice belongs
+  // at the moment of use, not in phone settings.
+  if (cmd == CMD_REMOTE_START) {
+    climate_window_push();
+    return;
+  }
+
   const char *title = "Working...";
   switch (cmd) {
     case CMD_HONK: title = "Honk & flash..."; break;
     case CMD_REFRESH: title = "Refreshing..."; break;
-    case CMD_REMOTE_START: title = "Starting engine..."; break;
+    case CMD_REMOTE_START: title = "Starting climate..."; break;
+    case CMD_REMOTE_STOP: title = "Stopping climate..."; break;
     default: break;
   }
   comm_send_cmd(cmd);
@@ -91,9 +101,16 @@ static void prv_window_load(Window *window) {
 
   // Remote start -- only if available at all (hide on not_capable; still
   // show on not_enabled/unknown per the same fail-open policy).
+  // Remote climate. On a petrol/diesel car this is preconditioning -- warm
+  // the cabin and clear the screen before you walk out -- so start and stop
+  // are offered as a pair. Shipping start without stop would leave the engine
+  // running with no way to end it from the same app.
   if (st->cap_remote_start != CAP_NOT_CAPABLE) {
-    prv_add_item("Remote Start", st->cap_remote_start == CAP_NOT_ENABLED ? "Not enabled" : NULL,
+    prv_add_item("Start Climate",
+                 st->cap_remote_start == CAP_NOT_ENABLED ? "Not enabled" : "Warm/cool the cabin",
                  CMD_REMOTE_START, st->cap_remote_start == CAP_NOT_ENABLED, false);
+    prv_add_item("Stop Climate", "Shut the engine off",
+                 CMD_REMOTE_STOP, st->cap_remote_start == CAP_NOT_ENABLED, false);
   }
 
   s_section = (SimpleMenuSection) {

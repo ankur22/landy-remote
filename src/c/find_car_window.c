@@ -39,12 +39,27 @@ static void prv_arrow_update_proc(Layer *layer, GContext *ctx) {
   GRect bounds = layer_get_bounds(layer);
   GPoint center = GPoint(bounds.size.w / 2, bounds.size.h / 2);
 
-  if (!pos->valid || pos->in_motion || !pos->has_fix) {
+  if (!pos->valid || !pos->has_fix) {
     return; // nothing to draw -- the text layers explain why
   }
 
-  int32_t heading_deg = s_have_heading ? (s_true_heading * 360 / TRIG_MAX_ANGLE) : 0;
+  // PebbleOS compass headings increase COUNTER-CLOCKWISE from north. pebble.h:
+  //   "Measured angle that increases counter-clockwise from magnetic north
+  //    (use int clockwise_heading = TRIG_MAX_ANGLE - heading_data.magnetic_heading)"
+  // Our bearing_deg is a standard true bearing, i.e. CLOCKWISE from north, so
+  // the two must be put in the same convention before subtracting. Subtracting
+  // the raw value mirrored the arrow about the north-south axis: right when the
+  // car was due north or south, worst at east/west.
+  int32_t ccw_heading_deg = s_have_heading ? (s_true_heading * 360 / TRIG_MAX_ANGLE) : 0;
+  int32_t heading_deg = (360 - ccw_heading_deg) % 360;   // now clockwise from north
   int32_t angle_deg = pos->bearing_deg - heading_deg;
+  // Logged because this can only be judged against the real world: point the
+  // watch at a known landmark and check the numbers agree with reality.
+  APP_LOG(APP_LOG_LEVEL_INFO,
+          "find: bearing=%d ccw_heading=%d cw_heading=%d arrow=%d status=%d have=%d",
+          (int) pos->bearing_deg, (int) ccw_heading_deg, (int) heading_deg,
+          (int) ((angle_deg % 360 + 360) % 360), (int) s_compass_status,
+          (int) s_have_heading);
   while (angle_deg < 0) angle_deg += 360;
   angle_deg = angle_deg % 360;
   int32_t angle_trig = (angle_deg * TRIG_MAX_ANGLE) / 360;
@@ -66,7 +81,10 @@ static void prv_refresh(void) {
 
   layer_set_hidden(s_arrow_layer, motion || !pos->valid || !pos->has_fix);
   layer_set_hidden(text_layer_get_layer(s_distance_layer), motion || !pos->valid || !pos->has_fix);
-  layer_set_hidden(text_layer_get_layer(s_quality_layer), motion || !pos->valid);
+  // The quality line doubles as the loading message, so it must be visible
+  // BEFORE the first position arrives -- otherwise the window opens blank for
+  // several seconds (two GPS fixes plus a round trip) and looks hung.
+  layer_set_hidden(text_layer_get_layer(s_quality_layer), motion);
   layer_set_hidden(text_layer_get_layer(s_motion_layer), !motion);
 
   if (motion) {
@@ -74,7 +92,8 @@ static void prv_refresh(void) {
   }
 
   if (!pos->valid) {
-    text_layer_set_text(s_quality_layer, "Locating...");
+    text_layer_set_text(s_quality_layer,
+      "Finding your car...\nThis needs a GPS fix and can take a few seconds.");
     return;
   }
 
@@ -95,6 +114,24 @@ static void prv_refresh(void) {
   // is worse than an honestly-hedged one (see the research doc's
   // find-my-car section and TU_STATUS_DAYS_SINCE_GNSS_FIX).
   const char *quality_str = (pos->quality == 0) ? "good" : (pos->quality == 1) ? "poor" : "unknown";
+
+  // The arrow is only meaningful if the compass is actually working. Without
+  // a heading we would silently draw the bearing relative to screen-up, which
+  // looks like a working compass that points somewhere arbitrary -- and gives
+  // the user nothing to act on. Say so, and say what fixes it.
+  if (!s_have_heading || s_compass_status == CompassStatusDataInvalid) {
+    snprintf(s_quality_buf, sizeof(s_quality_buf),
+             "Compass unavailable.\nMove your wrist in a figure 8.");
+    text_layer_set_text(s_quality_layer, s_quality_buf);
+    return;
+  }
+  if (s_compass_status == CompassStatusCalibrating) {
+    snprintf(s_quality_buf, sizeof(s_quality_buf),
+             "Calibrating compass...\nDirection may be off. Fix: %s", quality_str);
+    text_layer_set_text(s_quality_layer, s_quality_buf);
+    return;
+  }
+
   if (pos->days_since_fix > 0) {
     snprintf(s_quality_buf, sizeof(s_quality_buf), "Fix: %s, %d day(s) old", quality_str, pos->days_since_fix);
   } else {
@@ -122,16 +159,18 @@ static void prv_window_load(Window *window) {
 
   s_arrow_path = gpath_create(&ARROW_PATH_INFO);
 
-  s_arrow_layer = layer_create(GRect(0, 0, bounds.size.w, bounds.size.h - 50));
+  s_arrow_layer = layer_create(GRect(0, 0, bounds.size.w, bounds.size.h - 84));
   layer_set_update_proc(s_arrow_layer, prv_arrow_update_proc);
   layer_add_child(root, s_arrow_layer);
 
-  s_distance_layer = text_layer_create(GRect(4, bounds.size.h - 74, bounds.size.w - 8, 30));
+  s_distance_layer = text_layer_create(GRect(4, bounds.size.h - 82, bounds.size.w - 8, 28));
   text_layer_set_font(s_distance_layer, fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD));
   text_layer_set_text_alignment(s_distance_layer, GTextAlignmentCenter);
   layer_add_child(root, text_layer_get_layer(s_distance_layer));
 
-  s_quality_layer = text_layer_create(GRect(4, bounds.size.h - 40, bounds.size.w - 8, 36));
+  // Tall enough for the two-line loading message, not just the one-line
+  // "Fix: poor, 3 day(s) old" it also carries.
+  s_quality_layer = text_layer_create(GRect(4, bounds.size.h - 54, bounds.size.w - 8, 50));
   text_layer_set_font(s_quality_layer, fonts_get_system_font(FONT_KEY_GOTHIC_14));
   text_layer_set_text_alignment(s_quality_layer, GTextAlignmentCenter);
   text_layer_set_text_color(s_quality_layer, PBL_IF_COLOR_ELSE(GColorDarkGray, GColorBlack));

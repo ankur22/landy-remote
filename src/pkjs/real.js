@@ -10,6 +10,8 @@
   var DEFAULT_JLR = require('./jlr');
   var SELECTED_VIN_KEY = 'jlr_selected_vin';
   var PIN_KEY = 'jlr_pin';
+  var CLIMATE_TEMP_KEY = 'jlr_climate_temp_c';
+  var CLIMATE_TEMP_DEFAULT_C = 21;
   var PHONE_FIX_MAX_AGE_MS = 10000;
   // A GPS fix timestamp does not come from the same clock as Date.now() -- iOS
   // stamps it from the location subsystem -- so a fresh fix can legitimately
@@ -19,6 +21,36 @@
   // reason. Tolerate small skew; still reject fixes dated meaningfully ahead,
   // which would indicate a genuinely untrustworthy clock.
   var PHONE_FIX_MAX_SKEW_MS = 2000;
+
+  // ---- deriving speed when the OS will not report one ----
+  // Gap between the two fixes used to measure displacement. Long enough that a
+  // moving vehicle travels well clear of GPS noise, short enough not to make
+  // opening the app feel broken.
+  var DERIVE_INTERVAL_MS = 3000;
+  var PHONE_FIX_TIMEOUT_MS = 10000;
+  // Whole operation: initial fix + two intervals + two settled fixes.
+  var PHONE_READING_BUDGET_MS = 35000;
+  // Two stationary fixes still wander. Below this displacement we cannot
+  // distinguish movement from noise, so we call it stationary.
+  //
+  // TRADE-OFF, stated plainly: with a 3 s gap and a 15 m floor, this cannot
+  // detect motion below roughly 18 km/h -- walking pace reads as stationary.
+  // That is accepted deliberately. The risk this gate exists to prevent is
+  // unlocking or distracting someone in a MOVING VEHICLE, which is far above
+  // that; and the car's own reported speed is still checked independently and
+  // can veto on its own. The alternative -- refusing to act without a
+  // sub-walking-pace guarantee -- means the app never works at all, which is
+  // what shipped before this fix.
+  var DERIVE_MIN_NOISE_M = 15;
+  // Beyond this reported accuracy the displacement figure is meaningless, so
+  // we return unknown rather than guess.
+  var DERIVE_MAX_ACCURACY_M = 65;
+  var DERIVE_ASSUMED_ACCURACY_M = 25;   // when the OS omits accuracy entirely
+  // ~250 km/h. Above this the two fixes disagree by more than any car could
+  // travel, which means they came from different sources rather than that
+  // anything moved.
+  var DERIVE_IMPLAUSIBLE_MS = 70;
+
   var BUNDLE_REUSE_MS = 10000;
 
   function typedError(code, message, cause) {
@@ -92,7 +124,53 @@
     return typedError(fallbackCode, message, cause);
   }
 
-  function phoneReading(geolocation, timers, currentTime, callback) {
+  // Normalise a fix timestamp to epoch ms. The W3C geolocation spec says
+  // DOMTimeStamp, but the Pebble Core iOS runtime was observed (2026-07-28)
+  // returning something isNumber() rejects, so accept the plausible shapes
+  // rather than assume one: number, Date, or parseable string.
+  //
+  // Returns {ms, source} where source is 'fix' or 'receipt'. A fix with no
+  // usable timestamp of any kind falls back to OUR receipt time -- see
+  // checkFix for why that is defensible and what it costs.
+  function fixTimeMs(position, receiptTime) {
+    var raw = position ? position.timestamp : null;
+    if (isNumber(raw)) return { ms: raw, source: 'fix' };
+    if (raw && typeof raw.getTime === 'function') {
+      var viaDate = raw.getTime();
+      if (isNumber(viaDate)) return { ms: viaDate, source: 'fix' };
+    }
+    if (typeof raw === 'string' && raw) {
+      var parsed = Date.parse(raw);
+      if (isNumber(parsed)) return { ms: parsed, source: 'fix' };
+    }
+    return { ms: receiptTime, source: 'receipt' };
+  }
+
+  // Validate a raw geolocation fix's position and freshness (NOT its speed).
+  // Returns null if usable, else a reason string describing what failed.
+  //
+  // On the receipt-time fallback: when the platform gives us no usable
+  // timestamp we cannot verify freshness independently, so we treat the fix as
+  // taken now. That is weaker than a real timestamp, and it is a deliberate
+  // trade: every request passes maximumAge:0, so the OS has been asked not to
+  // hand back a cached fix, and the alternative is an app that refuses to work
+  // at all on a platform that never sends timestamps (observed on real
+  // hardware). The car's own reported speed is still checked independently.
+  function checkFix(position, currentTime, receiptTime) {
+    var coords = position && position.coords;
+    if (!coords) return 'no coords';
+    if (!isNumber(coords.latitude) || !isNumber(coords.longitude)) return 'no lat/lon';
+    var t = fixTimeMs(position, receiptTime === undefined ? currentTime : receiptTime);
+    if (t.source === 'receipt') return null;   // freshness unverifiable; see above
+    var age = currentTime - t.ms;
+    if (age < -PHONE_FIX_MAX_SKEW_MS) return 'fix ' + (-age) + 'ms in the future';
+    if (age > PHONE_FIX_MAX_AGE_MS) {
+      return 'fix ' + age + 'ms old, limit ' + PHONE_FIX_MAX_AGE_MS + 'ms';
+    }
+    return null;
+  }
+
+  function phoneReading(geolocation, timers, currentTime, clock, callback) {
     if (!geolocation || typeof geolocation.getCurrentPosition !== 'function') {
       callback(typedError('motion_unknown', 'Phone location is unavailable.'));
       return;
@@ -107,41 +185,169 @@
       }
       callback(err, value);
     }
-    function success(position) {
-      var coords = position && position.coords;
-      var timestamp = position && position.timestamp;
-      var age = isNumber(timestamp) ? currentTime - timestamp : null;
-      if (!coords || !isNumber(coords.latitude) || !isNumber(coords.longitude) ||
-          !isNumber(coords.speed) || coords.speed < 0 ||
-          age === null || age < -PHONE_FIX_MAX_SKEW_MS ||
-          age > PHONE_FIX_MAX_AGE_MS) {
-        finish(typedError('motion_unknown', 'Phone speed is unavailable.'));
-        return;
+
+    function getFix(onFix, onFail) {
+      try {
+        geolocation.getCurrentPosition(onFix, onFail, {
+          enableHighAccuracy: true,
+          maximumAge: 0,
+          timeout: PHONE_FIX_TIMEOUT_MS
+        });
+      } catch (err) {
+        if (settled) throw err;
+        onFail(err);
       }
-      finish(null, {
-        latitude: coords.latitude,
-        longitude: coords.longitude,
-        speed: coords.speed,
-        timestamp: timestamp,
-        units: 'ms'
-      });
     }
+
     function failure(err) {
       finish(typedError('motion_unknown', 'Phone location could not be read.', err));
     }
+
+    // ---- second stage: derive speed from displacement between two fixes ----
+    //
+    // Reached only when the OS declines to report a speed. iOS returns
+    // coords.speed = -1 whenever Core Location has no valid speed measurement,
+    // and that is the NORMAL case when the phone is sitting still -- which is
+    // precisely when someone wants to use this app. Treating it as
+    // motion-unknown made the app permanently unusable next to a parked car
+    // (observed on a real iPhone, 2026-07-28).
+    //
+    // We do NOT solve that by assuming -1 means stationary. That would be an
+    // assumption about an OS implementation detail on the one code path that
+    // must never be wrong, and -1 also occurs on a cold first fix while
+    // genuinely moving. Instead we measure it ourselves: take a second fix a
+    // few seconds later and derive speed from the displacement. That keeps the
+    // rule intact -- the gate still opens only on positive evidence of being
+    // stationary, just evidence we computed rather than evidence we were given.
+    // Takes TWO further fixes and measures between those, deliberately
+    // discarding the fix that got us here. getCurrentPosition typically
+    // answers the first call from a coarse network/cell source and only
+    // switches to GPS once it has settled; measuring from that first fix
+    // reports the jump between sources as movement (10,495 km/h, seen on real
+    // hardware). Ignoring it costs one extra interval and removes the whole
+    // class of error.
+    function deriveFromFurtherFixes() {
+      timers.setTimeout(function () {
+        if (settled) return;
+        getFix(function (fixA) {
+          var aNow = nowMsLocal();
+          var aReason = checkFix(fixA, aNow, aNow);
+          if (aReason) {
+            finish(typedError('motion_unknown',
+              'Phone speed is unavailable: settling fix rejected (' + aReason + ')'));
+            return;
+          }
+          var firstTs = fixTimeMs(fixA, aNow).ms;
+          var first = fixA.coords;
+          timers.setTimeout(function () {
+            if (settled) return;
+            getFix(function (second) {
+          var secondNow = nowMsLocal();
+          var reason = checkFix(second, secondNow, secondNow);
+          if (reason) {
+            finish(typedError('motion_unknown',
+              'Phone speed is unavailable: second fix rejected (' + reason + ')'));
+            return;
+          }
+          var c1 = first, c2 = second.coords;
+          var secondTs = fixTimeMs(second, secondNow).ms;
+          var dtMs = secondTs - firstTs;
+          if (!isNumber(dtMs) || dtMs <= 0) {
+            // No usable elapsed time from the fixes themselves -- happens when
+            // BOTH fall back to receipt time on a platform that sends no
+            // timestamps. We still know how long we waited, because we chose
+            // the interval, so use that rather than refusing. Failing here
+            // would strand exactly the devices the fallback exists to support.
+            dtMs = DERIVE_INTERVAL_MS;
+          }
+          var moved = distanceM(c1, c2);
+          // Accuracy-aware noise floor: two stationary fixes still wander by
+          // roughly their combined reported accuracy, so anything inside that
+          // is indistinguishable from standing still.
+          var acc1 = isNumber(c1.accuracy) ? c1.accuracy : DERIVE_ASSUMED_ACCURACY_M;
+          var acc2 = isNumber(c2.accuracy) ? c2.accuracy : DERIVE_ASSUMED_ACCURACY_M;
+          if (acc1 > DERIVE_MAX_ACCURACY_M || acc2 > DERIVE_MAX_ACCURACY_M) {
+            finish(typedError('motion_unknown',
+              'Phone speed is unavailable: fix too imprecise to derive speed (' +
+              Math.round(Math.max(acc1, acc2)) + 'm)'));
+            return;
+          }
+          var noiseFloorM = Math.max(DERIVE_MIN_NOISE_M, acc1 + acc2);
+          var derived = moved <= noiseFloorM ? 0 : (moved / (dtMs / 1000));
+
+          // Diagnostics for a path only observable on real hardware. No
+          // coordinates -- just the derived quantities.
+          var diag = 'moved=' + Math.round(moved) + 'm dt=' + dtMs +
+            'ms acc1=' + (isNumber(c1.accuracy) ? Math.round(c1.accuracy) : 'absent') +
+            ' acc2=' + (isNumber(c2.accuracy) ? Math.round(c2.accuracy) : 'absent') +
+            ' derived=' + Math.round(derived * 3.6) + 'km/h';
+
+          // A car cannot do this. A derived figure above it means the two fixes
+          // came from DIFFERENT SOURCES -- typically a coarse network/cell fix
+          // first, then GPS once it settles -- so the "displacement" is the
+          // jump between sources, not movement. Observed on real hardware:
+          // 10,495 km/h. Reporting that as speed would be false, and reporting
+          // it as "moving" would be false for the same reason, so this is
+          // unknown: we genuinely cannot tell, and unknown fails closed.
+          if (derived > DERIVE_IMPLAUSIBLE_MS) {
+            finish(typedError('motion_unknown',
+              'Phone speed is unavailable: fixes inconsistent, likely still ' +
+              'acquiring GPS (' + diag + ')'));
+            return;
+          }
+          finish(null, {
+            diag: diag,
+            latitude: c2.latitude,
+            longitude: c2.longitude,
+            speed: derived,
+            timestamp: secondTs,
+            units: 'ms',
+            derived: true
+          });
+            }, failure);
+          }, DERIVE_INTERVAL_MS);
+        }, failure);
+      }, DERIVE_INTERVAL_MS);
+    }
+
+    function nowMsLocal() {
+      // currentTime was sampled by the caller before the first fix; the second
+      // fix arrives seconds later, so re-sample rather than ageing it out
+      // falsely. Uses the INJECTED clock -- reaching for Date directly here
+      // would make the second fix look impossibly stale under a fixed test
+      // clock, and silently diverge from the clock everything else uses.
+      return nowMs(clock);
+    }
+
+    function success(position) {
+      var receiptNow = nowMs(clock);
+      var reason = checkFix(position, currentTime, receiptNow);
+      if (reason) {
+        // Deliberately never logs latitude/longitude -- only whether they were
+        // present -- so diagnostics cannot leak a location.
+        finish(typedError('motion_unknown', 'Phone speed is unavailable: ' + reason));
+        return;
+      }
+      var coords = position.coords;
+      if (isNumber(coords.speed) && coords.speed >= 0) {
+        finish(null, {                       // fast path: the OS told us
+          latitude: coords.latitude,
+          longitude: coords.longitude,
+          speed: coords.speed,
+          timestamp: fixTimeMs(position, receiptNow).ms,
+          units: 'ms'
+        });
+        return;
+      }
+      deriveFromFurtherFixes();
+    }
+
+    // Overall budget covers both fixes plus the interval between them.
     timerId = timers.setTimeout(function () {
       finish(typedError('motion_unknown', 'Phone location timed out.'));
-    }, 10000);
-    try {
-      geolocation.getCurrentPosition(success, failure, {
-        enableHighAccuracy: true,
-        maximumAge: 0,
-        timeout: 10000
-      });
-    } catch (err2) {
-      if (settled) throw err2;
-      failure(err2);
-    }
+    }, PHONE_READING_BUDGET_MS);
+
+    getFix(success, failure);
   }
 
   function toRad(degrees) { return degrees * Math.PI / 180; }
@@ -191,6 +397,7 @@
         (this._raw && typeof this._raw.isLoggedIn === 'function' &&
           this._raw.isLoggedIn()));
     this._pin = options.pin;
+    this._climateTempC = options.climateTempC;
     this._selectedVin = null;
     this._selectedVehicle = null;
     this._latestBundle = null;
@@ -293,11 +500,19 @@
                 'Could not read vehicle position.', positionErr, callback);
               return;
             }
-            phoneReading(self._geolocation, self._timers, nowMs(self._clock),
+            phoneReading(self._geolocation, self._timers, nowMs(self._clock), self._clock,
               function (phoneErr, phone) {
               var motion = self._jlr.motionState(status, position, phone);
               if (phoneErr) {
-                motion = unsafeMotion('live motion unknown', motion);
+                // Carry the actual cause through. Collapsing every phone-read
+                // failure to a fixed string makes a denied permission, a
+                // timeout, a stale fix and a missing speed field all look
+                // identical in the log -- and they need completely different
+                // fixes. phoneErr.message already names which check failed.
+                motion = unsafeMotion(
+                  'live motion unknown: ' +
+                    ((phoneErr && phoneErr.message) || 'no detail'),
+                  motion);
               }
               var bundle = {
                 vin: vin,
@@ -346,7 +561,7 @@
             callback(null, self._positionResult(status, car, null));
             return;
           }
-          phoneReading(self._geolocation, self._timers, nowMs(self._clock),
+          phoneReading(self._geolocation, self._timers, nowMs(self._clock), self._clock,
             function (phoneErr, phone) {
             if (phoneErr) { callback(phoneErr); return; }
             callback(null, self._positionResult(status, car, phone));
@@ -389,7 +604,7 @@
     };
   };
 
-  RealClient.prototype.sendCommand = function (serviceCode, callback) {
+  RealClient.prototype.sendCommand = function (serviceCode, callback, climateTempC) {
     var self = this;
     this.getBundle(function (bundleErr, bundle) {
       if (bundleErr) { callback(bundleErr); return; }
@@ -409,7 +624,7 @@
         callback(typedError('pin_required', 'A PIN is required for this command.'));
         return;
       }
-      self._raw.sendCommand(bundle.vin, serviceCode, pin, null, function (err, result) {
+      function onResult(err, result) {
         if (err) {
           callback(err);
           return;
@@ -421,8 +636,27 @@
           return;
         }
         callback(null, result);
-      });
+      }
+
+      // REON is remote CLIMATE on an ICE car, so it carries the target
+      // temperature; everything else is a plain command.
+      if (serviceCode === 'REON' &&
+          typeof self._raw.remoteEngineStart === 'function') {
+        var target = isNumber(climateTempC) ? climateTempC : self.climateTargetC();
+        self._raw.remoteEngineStart(bundle.vin, pin, target, onResult);
+        return;
+      }
+      self._raw.sendCommand(bundle.vin, serviceCode, pin, null, onResult);
     });
+  };
+
+  // Target cabin temperature in Celsius for remote start. Stored as a phone
+  // preference; falls back to a sane default rather than refusing to start.
+  RealClient.prototype.climateTargetC = function () {
+    if (isNumber(this._climateTempC)) return this._climateTempC;
+    var raw = storageGet(this._storage, CLIMATE_TEMP_KEY);
+    var parsed = raw === null ? NaN : parseFloat(raw);
+    return isNumber(parsed) ? parsed : CLIMATE_TEMP_DEFAULT_C;
   };
 
   var Real = {

@@ -53,6 +53,22 @@ function fakeJlr() {
   };
 }
 
+
+// The derive-speed path schedules a short timer between its two fixes, and a
+// long timer as the overall budget. Tests must run the former and ignore the
+// latter, or the budget fires instantly and every derive test "times out".
+function derivableTimers() {
+  return {
+    setTimeout: function (fn, delay) {
+      if (typeof fn === 'function' && delay !== undefined && delay <= 5000) {
+        process.nextTick(fn);
+      }
+      return 1;
+    },
+    clearTimeout: function () {}
+  };
+}
+
 function baseDeps(overrides) {
   var calls = [];
   var raw = {
@@ -105,10 +121,7 @@ function baseDeps(overrides) {
     },
     storage: memoryStorage({ jlr_selected_vin: 'VIN-TWO' }),
     clock: { now: function () { return Date.parse('2026-07-28T10:00:00Z'); } },
-    timers: {
-      setTimeout: function () { return 1; },
-      clearTimeout: function () {}
-    },
+    timers: derivableTimers(),
     pin: '1234'
   };
   overrides = overrides || {};
@@ -416,10 +429,172 @@ geoBundle('geolocation still fails closed on a far-future fix', {
   assert.strictEqual(bundle.motion.unknown, true);
 });
 
-geoBundle('geolocation null speed fails closed', {
-  getCurrentPosition: function (ok) { ok(geoPosition(null)); }
-}, 0, function (bundle) {
+// ---------------------------------------------------------------------------
+// iOS reports coords.speed = -1 (and some platforms null) whenever Core
+// Location has no valid speed measurement -- which is the NORMAL case when the
+// phone is standing still. Observed on a real iPhone 2026-07-28: the app was
+// permanently stuck on "Checking safety" next to a parked car, because the
+// gate treated "no speed reported" as "cannot prove stationary".
+//
+// We now measure it ourselves from two fixes. These tests pin that: a phone
+// that has not moved between fixes opens the gate; one that has moved a long
+// way does not; and anything we cannot measure still fails closed.
+// ---------------------------------------------------------------------------
+
+// The derive path takes THREE fixes: the first is discarded (it is typically a
+// coarse network fix before GPS settles), and the measurement is made between
+// the second and third. So a helper here must model three calls, and the
+// displacement that matters is call 2 -> call 3.
+function twoFixes(speedValue, movedLat, movedLon, accuracy) {
+  var calls = 0;
+  var acc = accuracy === undefined ? 5 : accuracy;
+  return {
+    getCurrentPosition: function (ok) {
+      calls++;
+      // Calls 1 and 2 sit at the base position; call 3 is wherever the test
+      // says, so "moved" tests exercise the measured pair.
+      var lat = calls >= 3 ? movedLat : 51.5008;
+      var lon = calls >= 3 ? movedLon : -0.1225;
+      ok({
+        timestamp: Date.parse('2026-07-28T09:59:5' + Math.min(calls + 4, 9) + 'Z'),
+        coords: { latitude: lat, longitude: lon, speed: speedValue, accuracy: acc }
+      });
+    }
+  };
+}
+
+geoBundle('iOS speed=-1 while stationary derives stationary and OPENS the gate',
+  twoFixes(-1, 51.5008, -0.1225), undefined, function (bundle) {
+    assert.strictEqual(bundle.motion.moving, false);
+    assert.strictEqual(bundle.motion.commandsAllowed, true);
+  });
+
+geoBundle('null speed while stationary also derives stationary',
+  twoFixes(null, 51.5008, -0.1225), undefined, function (bundle) {
+    assert.strictEqual(bundle.motion.moving, false);
+    assert.strictEqual(bundle.motion.commandsAllowed, true);
+  });
+
+// ~250 m in 3 s is roughly 300 km/h -- unambiguously moving. Deliberately well
+// clear of the noise floor so the test asserts the mechanism, not the constant.
+geoBundle('speed=-1 but the phone moved far between fixes stays LOCKED',
+  twoFixes(-1, 51.5030, -0.1225), undefined, function (bundle) {
+    assert.strictEqual(bundle.motion.moving, true);
+    assert.strictEqual(bundle.motion.commandsAllowed, false);
+  });
+
+// Too imprecise to tell movement from noise -> unknown, still fails closed.
+geoBundle('speed=-1 with a very imprecise fix fails closed',
+  twoFixes(-1, 51.5008, -0.1225, 400), undefined, function (bundle) {
+    assert.strictEqual(bundle.motion.unknown, true);
+    assert.strictEqual(bundle.motion.commandsAllowed, false);
+  });
+
+// If the second fix cannot be obtained at all, we have no evidence -> locked.
+geoBundle('speed=-1 with an unreadable second fix fails closed', {
+  getCurrentPosition: (function () {
+    var calls = 0;
+    return function (ok, fail) {
+      calls++;
+      if (calls === 1) {
+        ok({
+          timestamp: Date.parse('2026-07-28T09:59:57Z'),
+          coords: { latitude: 51.5008, longitude: -0.1225, speed: -1, accuracy: 5 }
+        });
+      } else {
+        fail(new Error('location unavailable'));
+      }
+    };
+  })()
+}, undefined, function (bundle) {
   assert.strictEqual(bundle.motion.unknown, true);
+  assert.strictEqual(bundle.motion.commandsAllowed, false);
+});
+
+// The car's own speed must still veto independently, even when the phone
+// derived "stationary" -- someone else may be driving it.
+geoBundle('derived-stationary phone still blocked when the CAR reports speed',
+  twoFixes(-1, 51.5008, -0.1225), 30, function (bundle) {
+    assert.strictEqual(bundle.motion.moving, true);
+    assert.strictEqual(bundle.motion.commandsAllowed, false);
+  });
+
+// ---------------------------------------------------------------------------
+// The Pebble Core iOS runtime was observed (2026-07-28) returning a fix whose
+// timestamp isNumber() rejects, which stranded the app on "Checking safety"
+// -- a SECOND cause hidden behind the speed=-1 one. Accept the plausible
+// shapes rather than assume the spec's DOMTimeStamp.
+// ---------------------------------------------------------------------------
+function fixWith(timestamp, speed) {
+  var calls = 0;
+  return {
+    getCurrentPosition: function (ok) {
+      calls++;
+      ok({
+        timestamp: timestamp,
+        coords: {
+          latitude: 51.5008,
+          longitude: -0.1225 + (calls === 1 ? 0 : 0.0000001),
+          speed: speed,
+          accuracy: 5
+        }
+      });
+    }
+  };
+}
+
+geoBundle('a Date-object fix timestamp is accepted',
+  fixWith(new Date(Date.parse('2026-07-28T10:00:00Z')), 0), undefined, function (bundle) {
+    assert.strictEqual(bundle.motion.moving, false);
+    assert.strictEqual(bundle.motion.commandsAllowed, true);
+  });
+
+geoBundle('an ISO-string fix timestamp is accepted',
+  fixWith('2026-07-28T10:00:00Z', 0), undefined, function (bundle) {
+    assert.strictEqual(bundle.motion.moving, false);
+    assert.strictEqual(bundle.motion.commandsAllowed, true);
+  });
+
+// No usable timestamp at all: fall back to our own receipt time rather than
+// refuse. maximumAge:0 means the OS was asked not to return a cached fix, and
+// the alternative is an app that never works on such a platform.
+geoBundle('a fix with no usable timestamp falls back to receipt time',
+  fixWith(undefined, 0), undefined, function (bundle) {
+    assert.strictEqual(bundle.motion.moving, false);
+    assert.strictEqual(bundle.motion.commandsAllowed, true);
+  });
+
+// The combination actually seen on the owner's iPhone: no usable timestamp
+// AND speed=-1. Must derive from two fixes and open the gate when stationary.
+geoBundle('no timestamp AND speed=-1 (the real device case) still opens the gate',
+  fixWith(undefined, -1), undefined, function (bundle) {
+    assert.strictEqual(bundle.motion.moving, false);
+    assert.strictEqual(bundle.motion.commandsAllowed, true);
+  });
+
+// Observed on real hardware 2026-07-28: getCurrentPosition answered the first
+// call from a coarse source, giving a derived 10,495 km/h. A car cannot do
+// that, so it means the fixes came from different sources -- report unknown
+// (which fails closed), never "moving at 10495 km/h".
+geoBundle('wildly inconsistent fixes report unknown, not a bogus speed', {
+  getCurrentPosition: (function () {
+    var calls = 0;
+    return function (ok) {
+      calls++;
+      // Third fix ~9 km from the second: impossible in the sample interval.
+      var lat = calls >= 3 ? 51.5808 : 51.5008;
+      ok({
+        timestamp: Date.parse('2026-07-28T09:59:57Z'),
+        coords: { latitude: lat, longitude: -0.1225, speed: -1, accuracy: 5 }
+      });
+    };
+  })()
+}, undefined, function (bundle) {
+  assert.strictEqual(bundle.motion.unknown, true);
+  assert.strictEqual(bundle.motion.commandsAllowed, false);
+  // Must not have been reported as a plausible-looking speed.
+  assert.ok(bundle.motion.reasons.join(' ').indexOf('inconsistent') !== -1,
+    'expected an inconsistency reason, got: ' + bundle.motion.reasons.join(' '));
 });
 
 test('geolocation callback-never path uses injected timeout', function (done) {
@@ -428,7 +603,9 @@ test('geolocation callback-never path uses injected timeout', function (done) {
     geolocation: { getCurrentPosition: function () {} },
     timers: {
       setTimeout: function (fn, delay) {
-        assert.strictEqual(delay, 10000);
+        // 35s: the budget covers an initial (discarded) fix plus two
+        // intervals and two settled fixes.
+        assert.strictEqual(delay, 35000);
         timeoutFn = fn;
         return 7;
       },

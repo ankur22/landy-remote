@@ -151,6 +151,33 @@
           maxlength="17" pattern="[A-Za-z0-9]{17}">
       </label>
 
+      <label>
+        Distance units
+        <select id="distance-unit">
+          <option value="miles" selected>Miles</option>
+          <option value="km">Kilometres</option>
+        </select>
+        <span class="hint">Changes range, odometer and service distances on the watch.</span>
+      </label>
+
+      <label>
+        Temperature units
+        <select id="temp-unit">
+          <option value="c" selected>Celsius (&deg;C)</option>
+          <option value="f">Fahrenheit (&deg;F)</option>
+        </select>
+        <span class="hint">Used by the remote climate temperature picker on the watch.</span>
+      </label>
+
+      <label>
+        Tyre pressure units
+        <select id="tyre-unit">
+          <option value="kpa" selected>kPa</option>
+          <option value="bar">bar</option>
+          <option value="psi">psi</option>
+        </select>
+      </label>
+
       <label class="check">
         <input id="store-pin" type="checkbox">
         <span>
@@ -187,6 +214,9 @@
       var storePin = document.getElementById('store-pin');
       var pinArea = document.getElementById('pin-area');
       var pin = document.getElementById('pin');
+      var distanceUnit = document.getElementById('distance-unit');
+      var tempUnit = document.getElementById('temp-unit');
+      var tyreUnit = document.getElementById('tyre-unit');
 
       function closeWith(payload) {
         window.location.href = 'pebblejs://close#' +
@@ -208,7 +238,10 @@
           password: document.getElementById('password').value,
           vin: document.getElementById('vin').value,
           storePin: storePin.checked,
-          pin: storePin.checked ? pin.value : ''
+          pin: storePin.checked ? pin.value : '',
+          distanceUnit: distanceUnit.value,
+          tempUnit: tempUnit.value,
+          tyreUnit: tyreUnit.value
         });
       });
       document.getElementById('logout').addEventListener('click', function () {

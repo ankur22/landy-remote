@@ -81,7 +81,10 @@
     ALOFF: 'alarmOff',
     VHS: 'healthstatus',
     REON: 'engineOn',
-    REOFF: 'engineOff'
+    REOFF: 'engineOff',
+    // Provisioning. Not a user-facing command: it must be run immediately
+    // before writing an ICE climate setting, or the settings write is refused.
+    PROV: 'prov'
   };
   // Services that authenticate with an empty PIN regardless of what the
   // caller passes (per jlrpy / willbeeching's native-app-derived behaviour).
@@ -108,7 +111,13 @@
 
   var CAPS_TTL_MS = 24 * 60 * 60 * 1000; // attributes/capabilities effectively never change
   var TOKEN_REFRESH_SKEW_MS = 5 * 60 * 1000; // refresh 5 min before real expiry
-  var POLL_ATTEMPTS = 10;   // ~30s, matches the reference implementation
+  // The reference implementation polls ~30s. That is too short here: on the
+  // owner's car a lock/unlock was OBSERVED completing successfully while the
+  // watch had already been told "no response" (2026-07-28). Reporting a
+  // command as failed when the car actually did it is the worst outcome of
+  // the three -- the user re-sends, or worse, walks away believing the car is
+  // still unlocked. Budget generously; a slow success beats a false failure.
+  var POLL_ATTEMPTS = 25;   // ~75s
   var POLL_INTERVAL_MS = 3000;
 
   // ------------------------------------------------------------------ utils
@@ -874,8 +883,15 @@
   JlrClient.prototype._pollService = function (vin, serviceId, lastStatus, attempt, callback) {
     var self = this;
     var state = String((lastStatus && lastStatus.status) || '').toLowerCase();
+    // Log the RAW status. If JLR ever returns a terminal value we do not
+    // recognise, this is the only way to see it -- otherwise it looks
+    // identical to a slow command and reports as a timeout.
+    log('poll ' + attempt + ' for ' + maskVin(vin) + ': status="' +
+        String((lastStatus && lastStatus.status) || '') + '"');
 
-    if (state === 'successful' || state === 'success') {
+    if (state === 'successful' || state === 'success' ||
+        state === 'completed' || state === 'complete' ||
+        state === 'executed' || state === 'delivered') {
       callback(null, { outcome: 'success', status: lastStatus });
       return;
     }
@@ -955,6 +971,105 @@
 
   // refreshFromVehicle -- VHS, always an empty PIN regardless of what's
   // passed (SERVICES_EMPTY_PIN enforces this centrally too).
+  // ---------------------------------------------------- ICE remote climate
+  //
+  // Remote start on a petrol/diesel car is really PRECONDITIONING: warm the
+  // cabin and clear the screen before you walk out. Starting the engine with
+  // whatever temperature the car happened to be left on mostly misses the
+  // point, so the target is settable.
+  //
+  // The car will not accept a climate setting directly. The sequence (per
+  // jlr-remote-research.md, mirroring willbeeching's async_remote_engine_start)
+  // is: authenticate PROV -> POST prov to enter provisioning mode -> POST the
+  // setting -> then REON. Provisioning is transient, so it must be re-entered
+  // immediately before each settings write rather than done once at setup.
+  //
+  // The car's own dial is an "RCC" scale, not Celsius: 31 = LO, 57 = HI.
+  var ICE_RCC_MIN = 31;
+  var ICE_RCC_MAX = 57;
+
+  function celsiusToRcc(celsius) {
+    var rcc = Math.round(celsius * 2);
+    if (rcc < ICE_RCC_MIN) return ICE_RCC_MIN;
+    if (rcc > ICE_RCC_MAX) return ICE_RCC_MAX;
+    return rcc;
+  }
+  JlrClient.celsiusToRcc = celsiusToRcc;   // exported for tests
+
+  JlrClient.prototype._enableProvisioning = function (vin, pin, callback) {
+    var self = this;
+    this._authenticateService(vin, 'PROV', pin, function (err, token) {
+      if (err) { callback(err); return; }
+      var headers = self._webviewHeaders(MEDIA_SERVICE_STATUS_V4);
+      headers['Content-Type'] = MEDIA_START_SERVICE;
+      xhrRequest('POST', IF9_BASE + '/vehicles/' + vin + '/' + SERVICE_ENDPOINTS.PROV,
+        headers,
+        { token: token, serviceCommand: 'provisioning', startTime: null, endTime: null },
+        function (err2, status) {
+          if (err2) { callback(err2); return; }
+          if (status !== 200 && status !== 202 && status !== 204) {
+            callback(self._authError('provisioning', status));
+            return;
+          }
+          callback(null);
+        });
+    });
+  };
+
+  JlrClient.prototype.setClimateTarget = function (vin, pin, celsius, callback) {
+    var self = this;
+    this.connect(function (connErr) {
+      if (connErr) { callback(connErr); return; }
+      self._enableProvisioning(vin, pin, function (provErr) {
+        if (provErr) { callback(provErr); return; }
+        // This endpoint wants plain JSON both ways -- the vnd.* types 406 here.
+        var headers = self._webviewHeaders(MEDIA_JSON);
+        headers['Content-Type'] = MEDIA_JSON;
+        xhrRequest('POST', IF9_BASE + '/vehicles/' + vin + '/settings', headers,
+          {
+            key: 'ClimateControlRccTargetTemp',
+            value: String(celsiusToRcc(celsius)),
+            applied: 1
+          },
+          function (err, status) {
+            if (err) { callback(err); return; }
+            if (status !== 200 && status !== 202 && status !== 204) {
+              callback(self._authError('climate settings', status));
+              return;
+            }
+            callback(null);
+          });
+      });
+    });
+  };
+
+  // Set the target then start. A failure to set the temperature is NOT fatal:
+  // the user asked for heat, and starting at the car's existing setting is far
+  // better than refusing to start at all on a cold morning. The outcome says
+  // which happened so the watch can tell them.
+  JlrClient.prototype.remoteEngineStart = function (vin, pin, celsius, callback) {
+    var self = this;
+    if (celsius === null || celsius === undefined) {
+      this.sendCommand(vin, 'REON', pin, null, callback);
+      return;
+    }
+    this.setClimateTarget(vin, pin, celsius, function (setErr) {
+      var tempApplied = !setErr;
+      if (setErr) {
+        log('climate target could not be set for ' + maskVin(vin) +
+            '; starting anyway at the vehicle\'s existing setting');
+      }
+      self.sendCommand(vin, 'REON', pin, null, function (err, result) {
+        if (result) result.tempApplied = tempApplied;
+        callback(err, result);
+      });
+    });
+  };
+
+  JlrClient.prototype.remoteEngineStop = function (vin, pin, callback) {
+    this.sendCommand(vin, 'REOFF', pin, null, callback);
+  };
+
   JlrClient.prototype.refreshFromVehicle = function (vin, callback) {
     this.sendCommand(vin, 'VHS', '', null, callback);
   };

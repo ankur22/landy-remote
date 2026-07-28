@@ -19,6 +19,8 @@ static void prv_defaults(void) {
   s_state.range_miles = -1;
   s_state.service_km = -1;
   s_state.adblue_km = -1;
+  s_state.odometer = -1;
+  s_state.climate_temp_c10 = 210;   // 21.0 C until the user picks
   s_state.tyre_fl_kpa = -1;
   s_state.tyre_fr_kpa = -1;
   s_state.tyre_rl_kpa = -1;
@@ -68,6 +70,15 @@ bool state_is_session_stationary_verified(void) {
   return s_session_stationary_verified;
 }
 
+int state_get_climate_temp_c10(void) {
+  return s_state.climate_temp_c10;
+}
+
+void state_set_climate_temp_c10(int temp_c10) {
+  s_state.climate_temp_c10 = temp_c10;
+  state_save_cache();
+}
+
 int state_ago_seconds(void) {
   if (!s_state.valid || s_state.ago_sec_at_receipt < 0) {
     return -1;
@@ -100,20 +111,19 @@ static bool prv_bool_or(DictionaryIterator *iter, uint32_t key, bool fallback) {
 
 void state_apply_status_update(DictionaryIterator *iter) {
   bool in_motion = prv_bool_or(iter, MESSAGE_KEY_STATUS_IN_MOTION, false);
-  s_session_stationary_verified = !in_motion;
+  // cmds_blocked is the safety-bearing flag; in_motion is only a display hint.
+  // Default TRUE when the key is absent so an older or malformed push can
+  // never enable the action bar by omission.
+  bool cmds_blocked = prv_bool_or(iter, MESSAGE_KEY_CMDS_BLOCKED, true);
+  s_session_stationary_verified = !cmds_blocked;
   s_state.in_motion = in_motion;
+  s_state.cmds_blocked = cmds_blocked;
   s_state.valid = true;
 
-  if (in_motion) {
-    // Per the safety rule, a motion push carries nothing else -- do not
-    // overwrite any other field (there's nothing to overwrite it WITH), and
-    // do not clear the cached values either: the moment motion clears, the
-    // last-known status should reappear rather than a blank screen while a
-    // fresh non-moving update is fetched. The in_motion flag alone is what
-    // the status window checks before drawing anything sensitive.
-    state_save_cache();
-    return;
-  }
+  // Read-only fields are applied whether or not commands are blocked -- the
+  // phone now always sends them (owner's decision 2026-07-28). Blanking the
+  // screen protected nothing a dashboard doesn't already show, and made an
+  // uncertain GPS fix look identical to a broken app.
 
   s_state.locked = prv_bool_or(iter, MESSAGE_KEY_STATUS_LOCKED, s_state.locked);
   s_state.fuel_perc = prv_int_or(iter, MESSAGE_KEY_STATUS_FUEL_PERC, s_state.fuel_perc);
@@ -121,6 +131,10 @@ void state_apply_status_update(DictionaryIterator *iter) {
   s_state.doors_open = prv_bool_or(iter, MESSAGE_KEY_STATUS_DOORS_OPEN, s_state.doors_open);
   s_state.windows_open = prv_bool_or(iter, MESSAGE_KEY_STATUS_WINDOWS_OPEN, s_state.windows_open);
   s_state.ago_sec_at_receipt = prv_int_or(iter, MESSAGE_KEY_STATUS_UPDATED_AGO_SEC, -1);
+  s_state.odometer = prv_int_or(iter, MESSAGE_KEY_STATUS_ODOMETER, s_state.odometer);
+  s_state.distance_in_km = prv_bool_or(iter, MESSAGE_KEY_STATUS_DISTANCE_UNIT, s_state.distance_in_km);
+  s_state.temp_in_f = prv_bool_or(iter, MESSAGE_KEY_STATUS_TEMP_UNIT, s_state.temp_in_f);
+  s_state.tyre_unit = prv_int_or(iter, MESSAGE_KEY_TYRE_UNIT, s_state.tyre_unit);
   s_state.received_at = time(NULL);
 
   Tuple *name_tuple = dict_find(iter, MESSAGE_KEY_STATUS_VEHICLE_NAME);

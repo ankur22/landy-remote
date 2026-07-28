@@ -26,20 +26,37 @@ assert(
   /prv_defaults[\s\S]*s_session_stationary_verified = false;/.test(stateSource),
   'startup must reset stationary verification before loading cached state'
 );
+// The gate now separates DISPLAY from ACTUATION (owner's decision 2026-07-28):
+// read-only data is always shown; only commands require proof of being
+// stationary. These assertions therefore track cmds_blocked, not in_motion.
 assert(
-  /state_apply_status_update[\s\S]*s_session_stationary_verified = !in_motion;/.test(stateSource),
-  'only a fresh non-motion status may establish stationary verification'
+  /state_apply_status_update[\s\S]*s_session_stationary_verified = !cmds_blocked;/.test(stateSource),
+  'only a fresh commands-allowed status may establish stationary verification'
 );
 assert(
-  /bool lockdown = !state_is_session_stationary_verified\(\) \|\| st->in_motion;/.test(statusSource),
-  'status rendering must hide cached data until current-session proof exists'
+  /MESSAGE_KEY_CMDS_BLOCKED, true\)/.test(stateSource),
+  'cmds_blocked must default to TRUE when the key is absent, so an older or ' +
+  'malformed push can never enable the action bar by omission'
+);
+assert(
+  /bool cmds_blocked = !state_is_session_stationary_verified\(\) \|\| st->cmds_blocked;/.test(statusSource),
+  'the action bar must be gated on cmds_blocked'
 );
 
-var clickGuards =
-  statusSource.match(/if \(!state_is_session_stationary_verified\(\) \|\| state_get\(\)->in_motion\) \{/g) || [];
+// UP (lock/unlock) and SELECT (a menu of commands) must both be inert without
+// proof. DOWN is find-my-car, a read, and is deliberately NOT gated.
+var upGuard = /if \(!state_is_session_stationary_verified\(\) \|\| st->cmds_blocked\) \{/
+  .test(statusSource);
+var selectGuard = /if \(!state_is_session_stationary_verified\(\) \|\| state_get\(\)->cmds_blocked\) \{/
+  .test(statusSource);
+assert(upGuard, 'the UP (lock/unlock) handler must be inert without stationary proof');
+assert(selectGuard, 'the SELECT (command menu) handler must be inert without stationary proof');
+
+// Regression guard: the actuating handlers must not be reachable via the old
+// display-only flag, which no longer implies anything about commands.
 assert(
-  clickGuards.length === 3,
-  'all three status-window buttons must be inert until stationary verification'
+  statusSource.indexOf('state_get()->in_motion) {\n    return;') === -1,
+  'command handlers must gate on cmds_blocked, never on the in_motion display hint'
 );
 
-console.log('startup safety: 6 assertions passed');
+console.log('startup safety: 8 assertions passed');
