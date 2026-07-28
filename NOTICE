@@ -1,0 +1,62 @@
+Landy Remote — third-party attribution and scope notes
+Copyright (c) 2026 Ankur Agarwal. Licensed under the MIT License; see LICENSE.
+
+--------------------------------------------------------------------------------
+THIRD-PARTY ATTRIBUTION
+--------------------------------------------------------------------------------
+
+This project's understanding of the Jaguar Land Rover InControl interface — the
+authentication sequence, endpoint paths, per-endpoint media types, service
+codes, and the status-flattening and command-polling behaviour — was derived
+from prior reverse-engineering work by others. Parts of the client in
+src/pkjs/jlr.js were ported from and cross-checked against that work.
+
+Each project below is MIT licensed. Their copyright notices are reproduced here
+as that licence requires, and because the credit is plainly owed: anything
+correct in this client owes a great deal to them, and anything wrong in it is
+this project's own.
+
+  ha-jlr-incontrol — https://github.com/willbeeching/ha-jlr-incontrol
+    Home Assistant integration for the JLR InControl webview backend. The
+    authentication chain, media types, service catalogue, status flattening and
+    command-polling logic here were ported from and verified against
+    custom_components/jlr_incontrol/{api.py,const.py}.
+
+    MIT License
+    Copyright (c) Will Beeching and contributors
+
+  jlrpy — https://github.com/ardevd/jlrpy
+    Python library for the JLR remote API. Source of the empty-PIN behaviour
+    for certain services, and much of the historic endpoint documentation.
+
+    MIT License
+    Copyright (c) Espen Andersen and contributors
+
+  jlr-remote — https://github.com/WonkiDonk/jlr-remote
+    TypeScript library for the JLR remote API, used as a cross-reference.
+
+    MIT License
+    Copyright (c) WonkiDonk and contributors
+
+The MIT License text, as it appears in this project's LICENSE file, applies to
+each of the above.
+
+--------------------------------------------------------------------------------
+NOT AFFILIATED WITH JAGUAR LAND ROVER
+--------------------------------------------------------------------------------
+
+This project is unofficial. It is not affiliated with, endorsed by, sponsored
+by, or supported by Jaguar Land Rover Limited. "Jaguar", "Land Rover",
+"Discovery", "InControl" and related marks belong to their respective owners
+and are used here only to describe what this software interoperates with.
+
+--------------------------------------------------------------------------------
+SCOPE OF THE LICENCE
+--------------------------------------------------------------------------------
+
+The MIT licence covers this project's own source code. It grants no rights in
+any third party's services, trademarks, or data, and says nothing about whether
+any particular use of those services is permitted by their operator.
+
+This software sends commands to a physical vehicle. The warranty and liability
+disclaimer in LICENSE is not boilerplate here — read it.

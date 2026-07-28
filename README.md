@@ -140,13 +140,13 @@ vehicle's location.
 This project stands on prior reverse-engineering by others, all MIT licensed:
 [ha-jlr-incontrol](https://github.com/willbeeching/ha-jlr-incontrol),
 [jlrpy](https://github.com/ardevd/jlrpy), and
-[jlr-remote](https://github.com/WonkiDonk/jlr-remote). See `LICENSE` for
+[jlr-remote](https://github.com/WonkiDonk/jlr-remote). See [NOTICE](NOTICE) for
 attribution details.
 
 ## Licence
 
-MIT — see [LICENSE](LICENSE).
+MIT — see [LICENSE](LICENSE), and [NOTICE](NOTICE) for attribution and scope.
 
-This licence covers this project's own code. It grants no rights in any third
+The licence covers this project's own code. It grants no rights in any third
 party's services, trademarks, or data. Note in particular the warranty and
 liability disclaimer: this software sends commands to a physical vehicle.
