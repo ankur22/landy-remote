@@ -10,7 +10,7 @@
 // pkjs.
 
 // Capability state for a single gated service. Mirrors jlr.js's
-// serviceState()/jlr-vehicle-capabilities.md section 2.4 exactly -- do not
+// serviceState()/landy-vehicle-capabilities.md section 2.4 exactly -- do not
 // renumber without updating index.js's capEnum() to match.
 typedef enum {
   CAP_AVAILABLE = 0,   // draw the button
@@ -21,7 +21,7 @@ typedef enum {
 
 // Outcome of the most recently completed command. Deliberately three
 // terminal states plus "none yet" -- never collapse declined/pending into a
-// generic failure (see jlr-remote-research.md's "three distinct outcomes").
+// generic failure (see landy-remote-research.md's "three distinct outcomes").
 typedef enum {
   CMD_OUTCOME_NONE = 0,
   CMD_OUTCOME_SUCCESS = 1,

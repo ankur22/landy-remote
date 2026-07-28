@@ -2,10 +2,10 @@
 // InControl "webview" backend.
 //
 // This is a straight port of the verified auth chain + endpoint contract in
-// jlr-remote-research.md / jlr-vehicle-capabilities.md, cross-checked against
+// landy-remote-research.md / landy-vehicle-capabilities.md, cross-checked against
 // the reference implementation at willbeeching/ha-jlr-incontrol (branch
 // `master`, custom_components/jlr_incontrol/{api.py,const.py}) and against
-// jlr-probe.py, which exercised the read paths live against a real account
+// landy-probe.py, which exercised the read paths live against a real account
 // and a real 2018 Land Rover Discovery.
 //
 // Design constraints (pkjs is neither a browser nor Node):
@@ -45,7 +45,7 @@
   // The whole webview edge hinges on these three headers. Miss Origin/Referer
   // and you get 498 (Approov wall) or 401. Confirmed to survive PebbleKit JS
   // intact (both the emulator and real iOS JavaScriptCore) -- see
-  // jlr-remote-research.md "Spike risk #1 -- RESOLVED".
+  // landy-remote-research.md "Spike risk #1 -- RESOLVED".
   var USER_AGENT = 'Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36';
   var WEBVIEW_ORIGIN = 'https://webview.prod-row.jlrmotor.com';
   var WEBVIEW_REFERER = 'https://webview.prod-row.jlrmotor.com/';
@@ -592,7 +592,7 @@
   };
 
   // serviceState(attributes, code) -> 'available' | 'not_capable' |
-  // 'not_enabled' | 'unknown'. Ported from jlr-vehicle-capabilities.md
+  // 'not_enabled' | 'unknown'. Ported from landy-vehicle-capabilities.md
   // section 2.4 -- msp1974's strictness (require BOTH vehicleCapable and
   // serviceEnabled) combined with willbeeching's fail-open when the whole
   // list is missing.
@@ -662,7 +662,7 @@
     });
   };
 
-  // _flatten_status port -- see jlr-remote-research.md's "implementation trap".
+  // _flatten_status port -- see landy-remote-research.md's "implementation trap".
   // Resolves LAST_UPDATED_TIME through three tiers, most to least authoritative:
   //
   //   1. a LAST_UPDATED_TIME entry in the coreStatus/evStatus key/value list
@@ -974,7 +974,7 @@
 
   JlrClient.prototype.unlock = function (vin, pin, callback) {
     // Unlock is a 45s window on the driver's door only, then the car
-    // auto-re-locks -- see jlr-remote-research.md. The caller is
+    // auto-re-locks -- see landy-remote-research.md. The caller is
     // responsible for surfacing that as a countdown, not this module.
     this.sendCommand(vin, 'RDU', pin, null, callback);
   };
@@ -993,7 +993,7 @@
   // point, so the target is settable.
   //
   // The car will not accept a climate setting directly. The sequence (per
-  // jlr-remote-research.md, mirroring willbeeching's async_remote_engine_start)
+  // landy-remote-research.md, mirroring willbeeching's async_remote_engine_start)
   // is: authenticate PROV -> POST prov to enter provisioning mode -> POST the
   // setting -> then REON. Provisioning is transient, so it must be re-entered
   // immediately before each settings write rather than done once at setup.

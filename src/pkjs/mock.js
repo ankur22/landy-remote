@@ -1,14 +1,14 @@
 // mock.js -- fixtures + a mock JLR client for milestone 3 (on-watch UI).
 //
 // Milestone 3 is explicitly built and verified against MOCK data only -- see
-// jlr-remote-research.md's build plan and the milestone 3 brief. Real
+// landy-remote-research.md's build plan and the milestone 3 brief. Real
 // backend wiring is milestone 4. This file is the "flag or build-time
 // switch" the brief asks for: index.js imports either this module or the
 // real src/pkjs/jlr.js based on the USE_MOCK constant at the top of
 // index.js. Nothing in here ever touches the network.
 //
 // Fixture shapes are deliberately the real shapes recorded in
-// jlr-remote-research.md / jlr-vehicle-capabilities.md from the live probe
+// landy-remote-research.md / landy-vehicle-capabilities.md from the live probe
 // against Ankur's 2018 Land Rover Discovery (2026-07-27):
 //   - status items are {key, value} pairs only -- no per-item
 //     lastUpdatedTime on this car -- and LAST_UPDATED_TIME is synthesised
@@ -38,7 +38,7 @@ var MOCK_ODD_OUTCOME_FIRST = 'success'; // first command outcome; cycles success
   // Mutable mock lock state -- flipped by successful LOCK/UNLOCK commands so
   // the status card visibly reflects a command's outcome instead of always
   // reporting the same canned value. Real unlock only holds for ~45s before
-  // the car auto-re-locks (see jlr-remote-research.md); the mock does not
+  // the car auto-re-locks (see landy-remote-research.md); the mock does not
   // simulate that timer itself -- the watch UI is responsible for the
   // "re-locks in 45s" messaging, not this fixture.
   var mockLocked = true;
@@ -92,7 +92,7 @@ var MOCK_ODD_OUTCOME_FIRST = 'success'; // first command outcome; cycles success
       },
       // Tier-3 freshness fallback -- this vehicle reports no top-level
       // LAST_UPDATED_TIME key and no per-item lastUpdatedTime, matching the
-      // live probe exactly (see jlr-remote-research.md's "implementation
+      // live probe exactly (see landy-remote-research.md's "implementation
       // trap"). Fixed 47 minutes before "now" at fixture-build time so the
       // freshness line always reads as a plausible age.
       lastUpdatedTime: new Date(Date.now() - 47 * 60 * 1000).toISOString().replace('Z', '+0000')

@@ -4,9 +4,9 @@
 // This exists so the exact client code that ships in the watchapp (not a
 // reimplementation of it) can be exercised against the real JLR backend
 // before/without going through the emulator or a phone. It is the Node
-// equivalent of jlr-probe.py, but calling the actual jlr.js module directly.
+// equivalent of landy-probe.py, but calling the actual jlr.js module directly.
 //
-// Safety, same as jlr-probe.py:
+// Safety, same as landy-probe.py:
 //   - READ-ONLY. Never calls sendCommand()/lock()/unlock()/honkFlash().
 //     Nothing is locked, unlocked, honked, or started on the real vehicle.
 //   - Credentials come from the Keychain or a hidden prompt (see below), never
