@@ -1,275 +1,140 @@
 # Landy Remote
 
-A Pebble Time 2 (and broader PebbleOS) watchapp for controlling a Jaguar Land
-Rover InControl-connected vehicle from the wrist: lock/unlock, honk & flash,
-find-my-car, and a glanceable status card. Not affiliated with or endorsed by
-Jaguar Land Rover.
+A Pebble Time 2 (and broader PebbleOS) watchapp for a Jaguar Land Rover
+InControl-connected vehicle: lock/unlock, honk & flash, find-my-car, and a
+glanceable status card.
 
-**Current status: milestone 5 (owner hardware validation ready).** The watch
-UI, AppMessage policy bridge, startup safety gate, injectable real-client
-adapter, and hosted phone configuration are wired together. Automated
-validation is deliberately fake-only: no JLR server or physical vehicle was
-contacted while implementing this milestone. Owner-led phone/watch validation
-remains outstanding.
+**Unofficial software. Not affiliated with, endorsed by, or supported by
+Jaguar Land Rover.**
 
-The production switch in `src/pkjs/index.js` selects `RealClient`. Set
-`USE_MOCK=true` only for explicit fixture-driven UI development. A static
-`pebble build` bundles JavaScript but does not execute the pkjs `ready`
-handler; installing or launching a real build does execute it.
+## What it does
 
-The full research trail this client is built from lives in the sibling
-`~/projects/pebble/` repo:
+- **Status card** — locked/unlocked, fuel level and range, doors or windows
+  left open, and how fresh the data is.
+- **Lock / unlock** — unlock requires an explicit confirmation on the watch.
+- **Honk & flash** — find the car in a car park.
+- **Find my car** — compass arrow and distance from your phone to the car's
+  last reported position, with the fix's age and quality shown so you can judge
+  how much to trust it.
+- **Tyres & service** — pressures, service and AdBlue distances, fluid warnings.
+- **Remote engine start**, where the vehicle supports it.
 
-- `jlr-remote-research.md` -- the verified API contract (hosts, auth chain,
-  headers, media types, endpoint map).
-- `jlr-vehicle-capabilities.md` -- the `availableServices` capability-gating
-  mechanism and what's known about this vehicle generation.
-- `jlr-probe.py` -- the read-only Python reference probe this client's logic
-  was ported from and cross-checked against.
+Buttons for services your vehicle or InControl subscription does not provide
+are not drawn — the app asks the vehicle what it supports rather than assuming.
 
-## Why this works at all (read this before touching the client)
+## Safety: the app locks down while the vehicle may be moving
 
-JLR's native-app API host is behind an Approov attestation wall (HTTP 498)
-that cannot be defeated from a Pebble. The working path instead talks to
-JLR's **browser-facing webview edge** (`/if9/webview/*`), which accepts a
-plain bearer token as long as the request carries a browser-shaped
-fingerprint: `Origin`/`Referer` set to `https://webview.prod-row.jlrmotor.com`,
-a `User-Agent`, and a registered `X-Device-Id` / `clientId` (yes, camelCase)
-pair. This was confirmed live on both the emulator and a real Pebble Time 2 +
-iOS -- pkjs does not enforce the browser forbidden-header list, so it can set
-`Origin`/`Referer` outright.
+If the app cannot positively confirm you are stationary, it shows **"Vehicle in
+motion"** or **"Checking safety"** and nothing else — no location, no fuel
+level, no door states — and refuses every command.
 
-This also means the whole design rests on JLR continuing to serve that edge
-the way it does today. If JLR tightens CORS/Origin checking or extends the
-Approov wall to the webview host, this client breaks with no workaround.
-Treat it as fragile-by-design, not a stable API integration.
+This is deliberate and it fails closed. The vehicle's own reported status can be
+hours stale, so it is never treated as proof the car is parked; the live signal
+is your phone's GPS speed. If that speed is unavailable, denied, stale, or
+indicates movement, the app stays locked down. Commands are blocked in the phone
+layer, not just hidden in the UI, so a stale screen cannot get one through.
 
-## API surface (`src/pkjs/jlr.js`)
+Expect this if location permission is off, or indoors with a poor fix.
 
-Single file, no npm dependencies, ES5-safe (`var`, no arrow functions, no
-Promises -- callback-style `(err, result)` throughout so it runs unmodified
-under pkjs's JS engine). Exports `JLR.Client`, plus a few pure helper
-functions used both internally and in tests: `JLR.maskVin`,
-`JLR.serviceState`, `JLR.flattenStatus`.
+## Requirements
 
-```js
-var JLR = require('./jlr');
-var client = new JLR.Client();
+- A Jaguar or Land Rover with an **active InControl subscription**
+- The **Pebble Core app** (iOS or Android) — the legacy iOS app's older
+  JavaScript engine is not supported
+- Remote lock, unlock and honk & flash require InControl **Remote Premium**-class
+  service and the vehicle security PIN
 
-client.login(email, password, function (err) { ... });
-client.refreshTokens(function (err) { ... });
-client.registerDevice(function (err) { ... });   // usually not called directly -- see below
-client.getUserId(function (err, userId) { ... });
+## Setup
 
-client.getVehicles(function (err, vehicles) { ... });
-client.getAttributes(vin, function (err, attrs) { ... });
-client.getCapabilities(vin, function (err, caps) { ... });
-client.getStatus(vin, function (err, statusDict) { ... });
-client.getPosition(vin, function (err, position) { ... });
+Open the app's settings in the Pebble phone app. That opens the configuration
+page, which is plain static HTML and **does not submit anything to a web
+server** — it hands the form back to the Pebble app through the standard
+`pebblejs://close#...` URL fragment.
 
-client.sendCommand(vin, 'RDL', pin, null, function (err, result) { ... });
-client.lock(vin, pin, function (err, result) { ... });
-client.unlock(vin, pin, function (err, result) { ... });
-client.honkFlash(vin, pin, function (err, result) { ... });
-client.refreshFromVehicle(vin, function (err, result) { ... }); // VHS, empty PIN always
-```
+1. Enter your InControl email and password.
+2. Leave VIN blank for a single-vehicle account; enter the 17-character VIN to
+   choose between several.
+3. Leave **Store vehicle PIN on this phone** off unless you want the remote
+   commands — read-only status and find-my-car work without it.
+4. Save.
 
-Most callers only need `login()` once and then the read/command methods --
-`connect()` (ensure token -> register device -> resolve user id) runs
-internally before every network call that needs it.
+Your **password is never stored**. It is used once to obtain renewable tokens,
+which are kept in the Pebble app's local storage on your phone. There is no
+server in between: your phone talks to JLR directly.
 
-### Auth and token handling
+**On storing the PIN:** it is off by default and entirely your choice. Turning it
+on means *anyone who can unlock your phone can unlock your car*. The watch still
+asks for confirmation before unlocking. "Sign out and clear saved data" removes
+the tokens, email, selected vehicle and PIN.
 
-- A stable per-install device UUID4 is generated once and persisted in pkjs
-  `localStorage`; it's what the webview edge's `X-Device-Id`/`clientId`
-  headers use.
-- **Device registration is redone after every new token** (login or refresh),
-  not just once per install -- the client tracks this per access-token
-  internally, so callers don't need to think about it.
-- Tokens (access, authorization, refresh) are persisted in `localStorage`.
-  **The plaintext password is never persisted anywhere** -- only the account
-  email (needed to re-run device registration / user lookup) and the refresh
-  token survive an app restart.
-- `ensureToken()` refreshes automatically when the access token is within 5
-  minutes of expiry. If refreshing fails (refresh token missing/rejected), it
-  surfaces an error rather than silently attempting a full password re-login
-  -- there is no stored password to fall back to. The caller (eventually the
-  watch app's login/config flow) is expected to catch that and re-prompt for
-  credentials, then call `login()` again.
-- Nothing in this module ever logs a credential, token, or PIN, not even
-  truncated. VINs are masked in every log line via `maskVin()`
-  (`SALGA…3456`).
+Note that a remote unlock opens **the driver's door only**, and the vehicle
+re-locks itself after about 45 seconds — so the status card correctly showing
+"locked" a minute later is not a bug.
 
-### Capability gating (`getCapabilities` / `serviceState`)
+## Reliability, honestly
 
-`getCapabilities(vin, cb)` fetches `/attributes` (cached 24h in
-`localStorage`, since it essentially never changes) and reduces
-`availableServices` into `{ RDL, RDU, HBLF, VHS, REON, REOFF, ALOFF,
-fuelType, vehicleType, modelYear }`, where each service code maps to one of:
+Remote commands go to JLR's servers and then to the car over its mobile
+connection. They routinely take 5–20 seconds, and they do sometimes fail —
+more often on older vehicles. The app reports what actually happened rather
+than a generic error:
 
-| State | Meaning | Suggested UI |
-|---|---|---|
-| `available` | `vehicleCapable && serviceEnabled` | draw the button |
-| `not_enabled` | listed, but `serviceEnabled === false` | draw disabled; "not enabled on your InControl account" |
-| `not_capable` | not in the list at all, or `vehicleCapable === false` | hide the button permanently |
-| `unknown` | the whole `availableServices` list is missing | fail open -- draw the button, let it fail once rather than hiding a feature because a field got renamed |
+- **Car declined** — the vehicle refused it; retrying now will not help
+- **No response** — most often the car is asleep or out of signal; retrying is
+  reasonable
+- **Could not reach vehicle** — a network or sign-in problem on our side
 
-This is msp1974's strictness (require both flags) combined with
-willbeeching's fail-open behaviour when the list itself is absent, per
-`jlr-vehicle-capabilities.md` section 2.4.
+This app talks to an interface JLR provides for their own web app. It is not a
+published API and carries no compatibility guarantee, so a change at their end
+can break it until the app is updated.
 
-### Status flattening and the `LAST_UPDATED_TIME` fallback
-
-`getStatus(vin, cb)` flattens `vehicleStatus.{coreStatus,evStatus}[]`
-`{key,value}` lists into a plain `{KEY: value}` dict, ported verbatim from
-`willbeeching/ha-jlr-incontrol`'s `api.py::_flatten_status`. **This vehicle
-does not report a top-level `LAST_UPDATED_TIME` status key at all** -- the
-flattener also tracks the newest per-item `lastUpdatedTime` field across
-every status entry and synthesises `LAST_UPDATED_TIME` from that whenever it
-is newer than whatever (if anything) is already under that key. Without this,
-a freshness display would either show nothing or fall back to the position
-timestamp, which is static while the car is parked and would read as
-permanently stale. Covered by both the pkjs self-test in `src/pkjs/index.js`
-and `test/unit-test.js`.
-
-### Commands are asynchronous -- three distinct outcomes
-
-`sendCommand(vin, serviceName, pin, serviceParameters, cb)` runs the two-step
-flow (`authenticate` -> service start endpoint) and then polls
-`GET /vehicles/<vin>/services/<customerServiceId>` up to 10 times at 3s
-intervals (~30s, matching the reference implementation) until a terminal
-state. `cb(err, result)` -- `err` is only set for a hard failure *before* a
-service was even started (bad auth, unknown service, transport failure,
-non-202/200 on the start call). Once a `customerServiceId` exists, every
-outcome comes back through `result`, never `err`:
-
-```js
-{ outcome: 'success',  status: <raw terminal payload> }
-{ outcome: 'declined', status: <raw terminal payload>, failureReason, failureDescription }
-{ outcome: 'pending',  status: <raw last-seen payload> }
-```
-
-- `declined` means the vehicle actively refused it (`Failed`/`Aborted`/
-  `Cancelled`, typically with `failureReason: 'NegativeAcknowledge'` and a
-  machine-readable `failureDescription` like `conflictWithOnboardChange` or
-  `parameterAlreadyInRequestedState`). Retrying usually won't help.
-- `pending` means the poll window ran out while the service was still
-  `Started`/non-terminal -- most often the car is asleep or out of signal.
-  Retrying is worth offering here, unlike `declined`.
-
-The watch UI (milestone 3+) must show these as different messages -- this
-vehicle's owner reports commands failing often, so this is the common case,
-not an edge case.
-
-Media types are per-endpoint and unforgiving (wrong `Accept` -> 406): the
-vehicle list and position endpoints need plain `application/json`; status
-needs the healthstatus vnd type; classic command endpoints
-(lock/unlock/honkBlink/healthstatus) need `ServiceStatus-v4` specifically (v5
-and plain JSON both 406 there). None of the BEV-only `PhevService` endpoints
-(preconditioning/chargeProfile, which want v5) are implemented -- this is a
-diesel Discovery, they're out of scope.
-
-## Offline verification
-
-All automated Milestone 4 tests inject raw clients, geolocation, storage,
-clocks, timers, and AppMessage endpoints. They are structurally unable to
-construct the production client or reach JLR.
-
-```sh
-node test/unit-test.js
-node test/real-client-test.js
-node test/bridge-test.js
-node test/startup-safety-test.js
-PATH="$HOME/.local/bin:$PATH" pebble build
-```
-
-- `unit-test.js` covers pure helpers and canned-XHR protocol behavior.
-- `real-client-test.js` covers the phone-motion matrix, explicit vehicle
-  selection, sequential bundle reads, short-lived in-memory position reuse,
-  find-my-car math/freshness, PIN and capability gates, and command outcome
-  fidelity.
-- `bridge-test.js` captures fake `Pebble.sendAppMessage()` dictionaries and
-  proves moving/unknown responses are data-free and every command fails
-  closed when safety lookup fails.
-- `startup-safety-test.js` proves persisted C state cannot establish
-  current-session stationary proof and all three status-window buttons stay
-  inert until fresh evidence arrives.
-- `pebble build` statically compiles all configured targets. It does not
-  execute pkjs or make a backend request.
-
-Do not include `test/live-smoke-test.js`, `pebble install`, an emulator
-launch, or screenshots in routine automated verification.
-
-### What must NEVER be tested against the real vehicle
-
-Do not call `sendCommand`/`lock`/`unlock`/`honkFlash`/`refreshFromVehicle`
-against the real backend from an automated test or a casual "let's see if it
-works" run. Those actuate a physical vehicle (unlock opens the driver's door;
-honk & flash is audible/visible outside). Exercise the command path only via
-`test/unit-test.js`'s mocked responses, or manually, deliberately, by Ankur.
-
-## Project layout
-
-```
-src/c/                    watch UI, persisted state, and current-session safety gate
-src/pkjs/jlr.js           low-level JLR API client
-src/pkjs/real.js          injectable safety-first real-client facade
-src/pkjs/mock.js          fixture-only facade for explicit offline UI work
-src/pkjs/index.js         AppMessage policy bridge and real/mock selection
-test/unit-test.js         canned-XHR + pure-logic tests
-test/real-client-test.js  fake-only real adapter contract tests
-test/bridge-test.js       fake AppMessage integration tests
-test/startup-safety-test.js static startup-lockdown invariants
-test/live-smoke-test.js   owner-only read-only diagnostic; excluded from validation
-package.json              project metadata (UUID, platforms, resources, message keys)
-wscript                   build rules -- no need to edit
-```
-
-## Building and owner hardware verification
+## Development
 
 ```sh
 export PATH="$HOME/.local/bin:$PATH"   # pebble-tool lives in ~/.local/bin
-pebble build                           # build for all targetPlatforms
+pebble build
+node test/unit-test.js                 # pure logic + canned-XHR tests
+node test/real-client-test.js          # real-client adapter, fakes only
+node test/bridge-test.js               # AppMessage bridge
+node test/startup-safety-test.js       # startup lockdown invariants
+node test/config-test.js               # configuration flow
 ```
 
-The owner should install only as a deliberate hardware-validation step.
-Launching a real build runs pkjs and may attempt backend reads when valid
-tokens already exist. Before testing, confirm the selected account/vehicle,
-start stationary, and expect a full lockdown whenever phone speed is absent,
-invalid, stale, denied, or at/above 5 km/h. Verify status and find-my-car
-reads before opting into any PIN-backed command. Never automate physical
-commands.
+All automated tests use injected fakes — no test contacts JLR or a vehicle.
 
-## Phone setup
+`src/pkjs/index.js` selects the real client by default. Set `USE_MOCK=true` for
+fixture-driven UI work; `src/pkjs/mock.js` has flags for the in-motion and
+reduced-capability cases, which are otherwise awkward to reach.
 
-The Pebble app's settings button opens the static configuration page at
-<https://ankur22.github.io/landy-remote/config/>. The page is hosted as plain
-HTML by GitHub Pages and does not submit data to a web server. It returns the
-form to Pebble through the standard `pebblejs://close#...` URL fragment.
+### Never automate a command against a real vehicle
 
-1. Enter the email and password for the InControl account.
-2. Leave VIN blank for a single-vehicle account. For a multi-vehicle account,
-   enter the 17-character VIN to select explicitly.
-3. Leave **Store vehicle PIN on this phone** off for read-only testing.
-4. Save. PebbleKit performs sign-in, stores renewable tokens (never the
-   password), verifies the selected vehicle, and refreshes the watch.
+`sendCommand`/`lock`/`unlock`/`honkFlash` actuate a physical car — unlock opens
+a door, honk & flash is audible and visible from outside. Exercise them only
+through mocked responses, or deliberately by hand by the vehicle's owner. Never
+from a test, a CI job, or a casual "let's see if it works" run.
 
-PIN storage is optional and off by default. Enabling it shows the warning:
-**Anyone who can unlock your phone can unlock your car.** The PIN is stored in
-PebbleKit local storage because JLR commands require it; the watch still
-requires confirmation before unlock. The configuration page also provides a
-sign-out action that clears account tokens, email, selected VIN, and PIN.
+The headers, media types and header names in `src/pkjs/jlr.js` are exact and
+load-bearing; several endpoints reject requests that look reasonable but differ.
+The comments there explain which and why — read them before changing a request.
 
-## Milestone 5 limitations
+### Layout
 
-- Passwords are never persisted. Rejected refresh authentication reports
-  that sign-in is required again.
-- A sole account vehicle is selected automatically. Multi-vehicle accounts
-  select by entering a VIN in phone settings.
-- PIN-required commands remain locally blocked when PIN storage is off; VHS
-  uses an empty PIN.
-- Pebble Core iOS may return `coords.speed=null`. This is intentionally motion
-  unknown: cached data stays hidden and every command remains blocked.
-- Real backend reads, authentication, physical actuation, and phone/watch UX
-  have not been validated by automation. That evidence belongs to deliberate
-  owner hardware testing.
+```
+src/c/                     watch UI, persisted state, session safety gate
+src/pkjs/jlr.js            JLR API client
+src/pkjs/real.js           safety-first client facade (injectable)
+src/pkjs/mock.js           fixtures for offline UI work
+src/pkjs/index.js          AppMessage bridge and client selection
+docs/config/               configuration page (GitHub Pages)
+test/                      automated tests, fakes only
+```
+
+## Privacy
+
+Credentials and vehicle data go directly between your phone and JLR. This
+project runs no server and collects no analytics. On the watch, only the
+glanceable status fields are cached — never your VIN, credentials, or the
+vehicle's location.
+
+## Licence
+
+Not yet chosen — all rights reserved until one is added.
