@@ -1,8 +1,11 @@
 # Landy Remote
 
-A Pebble Time 2 (and broader PebbleOS) watchapp for a Jaguar Land Rover
-InControl-connected vehicle: lock/unlock, honk & flash, find-my-car, and a
-glanceable status card.
+A **Pebble Time 2** watchapp for a Jaguar Land Rover InControl-connected
+vehicle: lock/unlock, honk & flash, find-my-car, and a glanceable status card.
+
+Pebble Time 2 (emery) only for now. The layouts are tuned to its 200x228
+screen; on a 144x168 Pebble the range figure and the service lines are
+truncated, so shipping there would look broken rather than merely cramped.
 
 **Unofficial software. Not affiliated with, endorsed by, or supported by
 Jaguar Land Rover.**
@@ -144,8 +147,7 @@ status fields are cached — never your VIN, credentials, or the vehicle's
 location.
 
 **Anonymous usage statistics are collected, and you can turn them off** in
-settings. This changed in v1.1 — earlier versions collected nothing, and it
-would be wrong to quietly swap this section. What is counted:
+settings. What is counted:
 
 - that the app was opened, and its version
 - which feature was used (lock, unlock, honk, find-my-car, climate)

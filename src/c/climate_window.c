@@ -48,14 +48,18 @@ static void prv_render(void) {
     }
     text_layer_set_text(s_temp_layer, s_temp_buf);
     // "left of 30" gives the bare remaining figure some context.
+    // The title stays a plain statement of state; the total goes in the hint,
+    // where it reads as a sentence. An earlier version put both in the title
+    // as "Running, of 30 min", which does not parse.
+    text_layer_set_text(s_title_layer, "Climate running");
     if (st->climate_runtime_min > 0 && st->climate_total_min > 0) {
-      snprintf(s_title_buf, sizeof(s_title_buf), "Running, of %d min",
+      snprintf(s_title_buf, sizeof(s_title_buf),
+               "left of %d min\nSELECT to stop, BACK to leave on",
                st->climate_total_min);
-      text_layer_set_text(s_title_layer, s_title_buf);
+      text_layer_set_text(s_hint_layer, s_title_buf);
     } else {
-      text_layer_set_text(s_title_layer, "Climate running");
+      text_layer_set_text(s_hint_layer, "SELECT to stop\nBACK to leave running");
     }
-    text_layer_set_text(s_hint_layer, "SELECT to stop\nBACK to leave running");
     return;
   }
 

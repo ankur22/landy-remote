@@ -24,13 +24,7 @@
       "location"
     ],
     "targetPlatforms": [
-      "aplite",
-      "basalt",
-      "chalk",
-      "diorite",
-      "emery",
-      "flint",
-      "gabbro"
+      "emery"
     ],
     "watchapp": {
       "watchface": false
