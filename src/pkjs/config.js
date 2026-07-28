@@ -25,6 +25,11 @@
       localStorage : null;
   }
 
+  function storageGet(storage, key) {
+    if (!storage || typeof storage.getItem !== 'function') return null;
+    try { return storage.getItem(key); } catch (err) { return null; }
+  }
+
   function storageSet(storage, key, value) {
     if (!storage) return;
     try {
@@ -89,10 +94,66 @@
       throw typedError('missing_client', 'A JLR client is required.');
     }
 
+    // Display preferences are just that -- they say nothing to JLR and need no
+    // session. Kept separate so they can be written without a sign-in.
+    function savePreferences(payload) {
+      storageSet(storage, DISTANCE_UNIT_KEY,
+        payload.distanceUnit === 'km' ? 'km' : 'miles');
+      storageSet(storage, TEMP_UNIT_KEY, payload.tempUnit === 'f' ? 'f' : 'c');
+      storageSet(storage, TYRE_UNIT_KEY,
+        (payload.tyreUnit === 'bar' || payload.tyreUnit === 'psi') ?
+          payload.tyreUnit : 'kpa');
+    }
+
+    // URL the settings button opens, carrying enough state for the page to
+    // reflect reality: current unit choices, whether we are signed in, and
+    // whether a PIN is stored.
+    //
+    // Deliberately carries NO email, password or VIN. Query strings end up in
+    // browser history and referrer headers, so nothing identifying goes here --
+    // the page asks for credentials only when it actually needs them.
+    function configUrl() {
+      var signedIn = rawClient.isLoggedIn() ? '1' : '0';
+      var pinStored = storageGet(storage, PIN_KEY) ? '1' : '0';
+      var d = storageGet(storage, DISTANCE_UNIT_KEY) === 'km' ? 'km' : 'miles';
+      var t = storageGet(storage, TEMP_UNIT_KEY) === 'f' ? 'f' : 'c';
+      var pRaw = storageGet(storage, TYRE_UNIT_KEY);
+      var p = (pRaw === 'bar' || pRaw === 'psi') ? pRaw : 'kpa';
+      return CONFIG_URL + '?si=' + signedIn + '&pin=' + pinStored +
+        '&d=' + d + '&t=' + t + '&p=' + p;
+    }
+
     function save(payload, callback) {
       var email = clean(payload.email);
       var password = String(payload.password || '');
       var pin = clean(payload.pin);
+
+      // Changing units should not cost a re-login. If we already hold a valid
+      // session and no new credentials were supplied, this is a preferences-only
+      // save: write them and stop. Re-authenticating to change a display unit
+      // would mean typing a password to switch from miles to km.
+      if (!password && rawClient.isLoggedIn()) {
+        try {
+          savePreferences(payload);
+          if (payload.keepPin === true) {
+            // Leave the stored PIN exactly as it is.
+          } else if (payload.storePin === true) {
+            if (!/^\d{4}$/.test(pin)) {
+              callback(typedError('invalid_pin', 'Enter the four digit vehicle PIN.'));
+              return;
+            }
+            storageSet(storage, PIN_KEY, pin);
+          } else if (payload.clearPin === true) {
+            storageSet(storage, PIN_KEY, null);
+          }
+        } catch (err) {
+          callback(err);
+          return;
+        }
+        callback(null, { action: 'save_preferences' });
+        return;
+      }
+
       if (!email || !password) {
         callback(typedError('credentials_required',
           'Enter your InControl email and password.'));
@@ -122,13 +183,7 @@
             vin = selectVehicle(vehicles, payload.vin);
             storageSet(storage, SELECTED_VIN_KEY, vin);
             storageSet(storage, PIN_KEY, payload.storePin === true ? pin : null);
-            // Display preference only -- no effect on what we request from JLR.
-            storageSet(storage, DISTANCE_UNIT_KEY,
-              payload.distanceUnit === 'km' ? 'km' : 'miles');
-            storageSet(storage, TEMP_UNIT_KEY, payload.tempUnit === 'f' ? 'f' : 'c');
-            storageSet(storage, TYRE_UNIT_KEY,
-              (payload.tyreUnit === 'bar' || payload.tyreUnit === 'psi') ?
-                payload.tyreUnit : 'kpa');
+            savePreferences(payload);
           } catch (err) {
             callback(err);
             return;
@@ -175,7 +230,8 @@
     }
 
     return {
-      handleResponse: handleResponse
+      handleResponse: handleResponse,
+      configUrl: configUrl
     };
   }
 

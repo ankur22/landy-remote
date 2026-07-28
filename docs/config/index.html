@@ -136,6 +136,13 @@
     </p>
 
     <form class="card" id="config-form">
+      <div id="signed-in-note" hidden>
+        <p class="hint" id="signed-in-text">Signed in. Change units below and save &mdash;
+        no password needed. Tap to sign in as a different account.</p>
+        <button class="secondary" id="show-signin" type="button">Sign in as someone else</button>
+      </div>
+
+      <div id="signin-area">
       <label>
         InControl email
         <input id="email" type="email" autocomplete="username" required>
@@ -150,6 +157,8 @@
         <input id="vin" type="text" autocomplete="off" autocapitalize="characters"
           maxlength="17" pattern="[A-Za-z0-9]{17}">
       </label>
+
+      </div>
 
       <label>
         Distance units
@@ -217,6 +226,50 @@
       var distanceUnit = document.getElementById('distance-unit');
       var tempUnit = document.getElementById('temp-unit');
       var tyreUnit = document.getElementById('tyre-unit');
+      var signinArea = document.getElementById('signin-area');
+      var signedInNote = document.getElementById('signed-in-note');
+      var showSignin = document.getElementById('show-signin');
+      var emailEl = document.getElementById('email');
+      var passwordEl = document.getElementById('password');
+
+      // The app opens this page with the current state on the query string --
+      // units, whether we are signed in, whether a PIN is held. No email,
+      // password or VIN is ever passed there.
+      function param(name) {
+        var m = new RegExp('[?&]' + name + '=([^&]*)').exec(window.location.search);
+        return m ? decodeURIComponent(m[1]) : null;
+      }
+      function selectValue(el, value) {
+        if (!value) return;
+        for (var i = 0; i < el.options.length; i++) {
+          if (el.options[i].value === value) { el.selectedIndex = i; return; }
+        }
+      }
+
+      // Reflect the CURRENT settings, so opening the page and saving cannot
+      // silently reset choices back to the defaults.
+      selectValue(distanceUnit, param('d'));
+      selectValue(tempUnit, param('t'));
+      selectValue(tyreUnit, param('p'));
+
+      var alreadySignedIn = param('si') === '1';
+      var pinAlreadyStored = param('pin') === '1';
+      if (alreadySignedIn) {
+        // Changing a display unit should not cost a password.
+        signinArea.hidden = true;
+        signedInNote.hidden = false;
+        emailEl.required = false;
+        passwordEl.required = false;
+        if (pinAlreadyStored) {
+          storePin.checked = true;
+        }
+      }
+      showSignin.addEventListener('click', function () {
+        signinArea.hidden = false;
+        signedInNote.hidden = true;
+        emailEl.required = true;
+        passwordEl.required = true;
+      });
 
       function closeWith(payload) {
         window.location.href = 'pebblejs://close#' +
@@ -225,8 +278,12 @@
 
       function updatePin() {
         pinArea.hidden = !storePin.checked;
-        pin.required = storePin.checked;
+        // A PIN already held does not need retyping just to change units.
+        pin.required = storePin.checked && !pinAlreadyStored;
         if (!storePin.checked) pin.value = '';
+        if (storePin.checked && pinAlreadyStored && !pin.value) {
+          pin.placeholder = 'Kept (leave blank)';
+        }
       }
 
       storePin.addEventListener('change', updatePin);
@@ -239,6 +296,11 @@
           vin: document.getElementById('vin').value,
           storePin: storePin.checked,
           pin: storePin.checked ? pin.value : '',
+          // Distinguish "keep the PIN I already stored" from "store this new
+          // one" and from "forget it" -- otherwise changing units would either
+          // demand the PIN again or silently drop it.
+          keepPin: storePin.checked && pinAlreadyStored && !pin.value,
+          clearPin: !storePin.checked,
           distanceUnit: distanceUnit.value,
           tempUnit: tempUnit.value,
           tyreUnit: tyreUnit.value

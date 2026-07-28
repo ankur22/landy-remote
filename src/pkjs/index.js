@@ -303,7 +303,10 @@ function resetRealClient() {
 if (!USE_MOCK) {
   Pebble.addEventListener('showConfiguration', function () {
     log('opening phone configuration');
-    Pebble.openURL(CONFIG.CONFIG_URL);
+    // Pass current state so the page can prefill and skip the sign-in when
+    // only preferences are being changed.
+    Pebble.openURL(configController && configController.configUrl ?
+      configController.configUrl() : CONFIG.CONFIG_URL);
   });
 
   Pebble.addEventListener('webviewclosed', function (event) {
