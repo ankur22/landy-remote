@@ -43,23 +43,46 @@ static void prv_arrow_update_proc(Layer *layer, GContext *ctx) {
     return; // nothing to draw -- the text layers explain why
   }
 
-  // PebbleOS compass headings increase COUNTER-CLOCKWISE from north. pebble.h:
-  //   "Measured angle that increases counter-clockwise from magnetic north
-  //    (use int clockwise_heading = TRIG_MAX_ANGLE - heading_data.magnetic_heading)"
-  // Our bearing_deg is a standard true bearing, i.e. CLOCKWISE from north, so
-  // the two must be put in the same convention before subtracting. Subtracting
-  // the raw value mirrored the arrow about the north-south axis: right when the
-  // car was due north or south, worst at east/west.
-  int32_t ccw_heading_deg = s_have_heading ? (s_true_heading * 360 / TRIG_MAX_ANGLE) : 0;
-  int32_t heading_deg = (360 - ccw_heading_deg) % 360;   // now clockwise from north
+  // An UNCALIBRATED magnetometer does not merely add noise -- it compresses
+  // the whole range. Measured beside the vehicle 2026-07-28: a full 360 degree
+  // turn on the spot moved the reported heading through about 57 degrees, and
+  // not monotonically, with status stuck at CompassStatusCalibrating
+  // throughout. The arrow rendered that faithfully, so it looked like a
+  // working compass pointing confidently in the wrong direction.
+  //
+  // Drawing nothing is the honest option. Someone acting on a wrong arrow
+  // walks the wrong way across a car park; someone shown a calibration prompt
+  // fixes it in five seconds. Distance stays visible either way -- it does not
+  // depend on the compass.
+  if (s_compass_status != CompassStatusCalibrated) {
+    return;
+  }
+
+  // Heading convention, settled by observation rather than by the header.
+  //
+  // pebble.h says headings "increase counter-clockwise from magnetic north"
+  // and suggests TRIG_MAX_ANGLE - heading to get a clockwise one. I applied
+  // that conversion, and on real hardware it put the arrow 90 degrees out: the
+  // car was at 10 o'clock and the arrow pointed at 1 o'clock, which is exactly
+  // the 2*heading error you get from flipping a value that was already
+  // clockwise. On this device/firmware true_heading is ALREADY clockwise from
+  // north, so it can be subtracted from a standard bearing directly.
+  //
+  // The earlier round where this looked wrong without the conversion was a red
+  // herring: the compass was reporting CompassStatusCalibrating throughout, so
+  // the headings themselves were unreliable. The doc comment lost to the
+  // measurement, which is the right way round.
+  int32_t heading_deg = s_have_heading ? (s_true_heading * 360 / TRIG_MAX_ANGLE) : 0;
   int32_t angle_deg = pos->bearing_deg - heading_deg;
-  // Logged because this can only be judged against the real world: point the
-  // watch at a known landmark and check the numbers agree with reality.
+  // Both candidates logged so this can be re-checked against the world in one
+  // glance rather than another round of guessing: `arrow` is what is drawn,
+  // `alt` is what the other convention would have drawn.
   APP_LOG(APP_LOG_LEVEL_INFO,
-          "find: bearing=%d ccw_heading=%d cw_heading=%d arrow=%d status=%d have=%d",
-          (int) pos->bearing_deg, (int) ccw_heading_deg, (int) heading_deg,
-          (int) ((angle_deg % 360 + 360) % 360), (int) s_compass_status,
-          (int) s_have_heading);
+          "find: bearing=%d heading=%d arrow=%d alt=%d status=%d have=%d",
+          (int) pos->bearing_deg, (int) heading_deg,
+          (int) ((angle_deg % 360 + 360) % 360),
+          (int) (((pos->bearing_deg - (360 - heading_deg)) % 360 + 360) % 360),
+          (int) s_compass_status, (int) s_have_heading);
   while (angle_deg < 0) angle_deg += 360;
   angle_deg = angle_deg % 360;
   int32_t angle_trig = (angle_deg * TRIG_MAX_ANGLE) / 360;
@@ -119,15 +142,13 @@ static void prv_refresh(void) {
   // a heading we would silently draw the bearing relative to screen-up, which
   // looks like a working compass that points somewhere arbitrary -- and gives
   // the user nothing to act on. Say so, and say what fixes it.
-  if (!s_have_heading || s_compass_status == CompassStatusDataInvalid) {
+  if (s_compass_status != CompassStatusCalibrated) {
+    // Same message for "no data" and "still calibrating": in both cases we
+    // have no direction worth showing, and the user's action is identical.
+    // Naming the motion matters -- "calibrating" alone sounds like something
+    // to wait out, and it will not finish on its own.
     snprintf(s_quality_buf, sizeof(s_quality_buf),
-             "Compass unavailable.\nMove your wrist in a figure 8.");
-    text_layer_set_text(s_quality_layer, s_quality_buf);
-    return;
-  }
-  if (s_compass_status == CompassStatusCalibrating) {
-    snprintf(s_quality_buf, sizeof(s_quality_buf),
-             "Calibrating compass...\nDirection may be off. Fix: %s", quality_str);
+             "Compass not calibrated.\nWave the watch in a figure 8.");
     text_layer_set_text(s_quality_layer, s_quality_buf);
     return;
   }
@@ -146,6 +167,13 @@ static void prv_compass_handler(CompassHeadingData data) {
   s_true_heading = data.true_heading;
   s_compass_status = data.compass_status;
   s_have_heading = (data.compass_status != CompassStatusDataInvalid);
+  // Logged separately from the draw so three failures can be told apart: no
+  // compass events at all (this line stops), events arriving but no redraw
+  // (this line moves while "find:" does not), and redraws that compute the
+  // same angle anyway (both move, arrow does not).
+  APP_LOG(APP_LOG_LEVEL_INFO, "compass: heading=%d status=%d",
+          (int) (data.true_heading * 360 / TRIG_MAX_ANGLE),
+          (int) data.compass_status);
   layer_mark_dirty(s_arrow_layer);
 }
 
@@ -184,7 +212,9 @@ static void prv_window_load(Window *window) {
   text_layer_set_text(s_motion_layer, "Vehicle in motion");
   layer_add_child(root, text_layer_get_layer(s_motion_layer));
 
-  compass_service_set_heading_filter(TRIG_MAX_ANGLE / 60); // ~6 degrees
+  // 2 degrees, not 6. The coarser filter meant small turns produced no event
+  // at all, so the arrow sat still while the world moved under it.
+  compass_service_set_heading_filter(TRIG_MAX_ANGLE / 180);
   compass_service_subscribe(prv_compass_handler);
 
   comm_set_position_callback(prv_position_updated);

@@ -81,4 +81,29 @@ assert(
   'motionState must not infer motion from a running engine'
 );
 
-console.log('startup safety: 3 further assertions passed');
+// Compass convention, settled on real hardware: true_heading is ALREADY
+// clockwise from north on this device, despite pebble.h describing it as
+// counter-clockwise. Applying the documented conversion put the arrow 90
+// degrees out with the car in plain sight. Guard against the doc comment
+// being "restored" over the measurement.
+var findSource = fs.readFileSync(path.join(root, 'src/c/find_car_window.c'), 'utf8');
+assert(
+  /int32_t heading_deg = s_have_heading \? \(s_true_heading \* 360 \/ TRIG_MAX_ANGLE\) : 0;/
+    .test(findSource),
+  'the raw heading must be used directly -- it is already clockwise here'
+);
+assert(
+  !/int32_t heading_deg = \(360 - ccw_heading_deg\)/.test(findSource),
+  'the counter-clockwise conversion must not come back; it was measured wrong'
+);
+
+// A direction we know is untrustworthy must not be drawn. Measured beside the
+// vehicle: an uncalibrated magnetometer compressed a full 360 degree turn into
+// ~57 degrees of reported heading, so the arrow pointed confidently the wrong
+// way. Distance does not depend on the compass and stays visible.
+assert(
+  /if \(s_compass_status != CompassStatusCalibrated\) \{\s*\n\s*return;/.test(findSource),
+  'the arrow must not be drawn unless the compass is actually calibrated'
+);
+
+console.log('startup safety: 6 further assertions passed');
