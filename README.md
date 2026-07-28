@@ -135,6 +135,18 @@ project runs no server and collects no analytics. On the watch, only the
 glanceable status fields are cached — never your VIN, credentials, or the
 vehicle's location.
 
+## Credits
+
+This project stands on prior reverse-engineering by others, all MIT licensed:
+[ha-jlr-incontrol](https://github.com/willbeeching/ha-jlr-incontrol),
+[jlrpy](https://github.com/ardevd/jlrpy), and
+[jlr-remote](https://github.com/WonkiDonk/jlr-remote). See `LICENSE` for
+attribution details.
+
 ## Licence
 
-Not yet chosen — all rights reserved until one is added.
+MIT — see [LICENSE](LICENSE).
+
+This licence covers this project's own code. It grants no rights in any third
+party's services, trademarks, or data. Note in particular the warranty and
+liability disclaimer: this software sends commands to a physical vehicle.
