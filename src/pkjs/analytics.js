@@ -73,6 +73,27 @@
     return id;
   }
 
+  // The watch model, as the service's platform enum. Reported by the phone
+  // app; falls back to "unknown", which the service accepts.
+  var PLATFORMS = {
+    aplite: 1, basalt: 1, chalk: 1, diorite: 1, emery: 1, flint: 1, gabbro: 1
+  };
+  var cachedPlatform = null;
+
+  function platform() {
+    if (cachedPlatform) return cachedPlatform;
+    cachedPlatform = 'unknown';
+    try {
+      if (typeof Pebble !== 'undefined' && Pebble.getActiveWatchInfo) {
+        var info = Pebble.getActiveWatchInfo();
+        if (info && info.platform && PLATFORMS[info.platform] === 1) {
+          cachedPlatform = info.platform;
+        }
+      }
+    } catch (e) { /* older runtimes throw here; unknown is fine */ }
+    return cachedPlatform;
+  }
+
   function create(options) {
     options = options || {};
     var xhrFactory = options.xhrFactory || function () { return new XMLHttpRequest(); };
@@ -83,7 +104,18 @@
 
     function send(event, fields) {
       if (!isEnabled()) return;
-      var body = { app: APP, wid: wid(), event: event, version: version };
+      // Field names are the ingest service's schema-1 contract, not ours:
+      // schema, event, app_version, platform, wid. The service rejects
+      // unknown fields outright, so a mismatch here is a silent 400 for every
+      // event -- which is exactly what the first version of this shipped as.
+      var body = {
+        schema: 1,
+        app: APP,
+        event: event,
+        app_version: version,
+        platform: platform(),
+        wid: wid()
+      };
       if (fields) {
         for (var k in fields) {
           if (Object.prototype.hasOwnProperty.call(fields, k)) body[k] = fields[k];
@@ -116,6 +148,9 @@
       // cmd is our own enum; outcome is one of success/declined/pending/error/
       // blocked. Gives real command reliability across many vehicles, which is
       // currently guesswork from forum anecdotes.
+      // cmd is a NAME, not our internal enum number: the service uses it as a
+      // Prometheus label, and a renumbered enum would silently change what a
+      // metric means.
       command: function (cmd, outcome) {
         send('command', { cmd: String(cmd), outcome: String(outcome) });
       },

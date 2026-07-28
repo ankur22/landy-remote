@@ -183,6 +183,17 @@ var OUTCOME_NAME = {
   1: 'success', 2: 'declined', 3: 'pending', 4: 'error', 5: 'blocked_motion'
 };
 
+// CMD int -> the label the ingest service allowlists. Explicit map for the
+// same reason as OUTCOME_NAME: renumbering the enum must not silently change
+// what a metric counts.
+var CMD_NAME = {};
+CMD_NAME[CMD_LOCK] = 'lock';
+CMD_NAME[CMD_UNLOCK] = 'unlock';
+CMD_NAME[CMD_HONK] = 'honk';
+CMD_NAME[CMD_REFRESH] = 'refresh';
+CMD_NAME[CMD_REMOTE_START] = 'climate_start';
+CMD_NAME[CMD_REMOTE_STOP] = 'climate_stop';
+
 var SUCCESS_MESSAGE = {};
 SUCCESS_MESSAGE[CMD_LOCK] = 'Locked.';
 SUCCESS_MESSAGE[CMD_UNLOCK] = "Unlocked - driver's door only. Re-locks automatically in 45s.";
@@ -669,7 +680,8 @@ function prv_send_command(client, cmd, serviceCode, climateTempC10) {
         ' msg="' + dict['CMD_MESSAGE'] + '"');
     sendDict(dict, 'command result');
     // After sendDict, never before: the watch gets its answer first.
-    analytics.command(cmd, OUTCOME_NAME[dict['CMD_OUTCOME']] || 'unknown');
+    analytics.command(CMD_NAME[cmd] || 'other',
+                      OUTCOME_NAME[dict['CMD_OUTCOME']] || 'other');
     if (dict['CMD_OUTCOME'] === 1) {
       if (cmd === CMD_REMOTE_START) {
         assumeUntil(CLIMATE_ON_UNTIL_KEY, CLIMATE_ASSUMED_ON_MS);

@@ -44,7 +44,19 @@ check('app_open is sent with the app and version', function () {
   assert.strictEqual(sentBodies.length, 1);
   assert.strictEqual(sentBodies[0].body.event, 'app_open');
   assert.strictEqual(sentBodies[0].body.app, 'landy');
-  assert.strictEqual(sentBodies[0].body.version, '1.2.3');
+  // Field name is the SERVICE's, not ours: app_version, plus schema and
+  // platform. Getting these wrong is a silent 400 on every event.
+  assert.strictEqual(sentBodies[0].body.app_version, '1.2.3');
+  assert.strictEqual(sentBodies[0].body.schema, 1);
+  assert.ok(typeof sentBodies[0].body.platform === 'string');
+});
+
+check('the payload matches the ingest schema exactly', function () {
+  // The service uses DisallowUnknownFields, so any extra key is a 400 for the
+  // whole event. Pin the exact set rather than trusting a comment.
+  assert.deepStrictEqual(
+    Object.keys(sentBodies[0].body).sort(),
+    ['app', 'app_version', 'event', 'platform', 'schema', 'wid']);
 });
 
 check('no timestamp is sent -- the server timestamps the counter', function () {
@@ -85,23 +97,24 @@ check('each event carries only its own low-cardinality labels', function () {
 
 // ------------------------------------------------------- THE PRIVACY FLOOR
 check('no payload contains anything identifying a vehicle or a location', function () {
-  var forbidden = [
-    'vin', 'lat', 'lon', 'latitude', 'longitude', 'bearing', 'distance',
-    'speed', 'email', 'token', 'pin', 'password', 'odometer', 'fuel',
-    'range', 'locked', 'door', 'window', 'tyre', 'country', 'position',
-    'model', 'year', 'name'
-  ];
+  // An ALLOWLIST, not a blocklist of suspicious substrings. The blocklist
+  // version flagged "platform" for containing "lat", and worse, would have
+  // silently passed any future field whose name happened to look innocent.
+  // Anything not named here is a failure by default.
+  var allowed = {
+    schema: 1, app: 1, event: 1, app_version: 1, platform: 1, wid: 1,
+    cmd: 1, outcome: 1, kind: 1, service: 1, state: 1, feature: 1
+  };
   sentBodies.forEach(function (s) {
     Object.keys(s.body).forEach(function (k) {
-      forbidden.forEach(function (bad) {
-        assert.ok(k.toLowerCase().indexOf(bad) === -1,
-          'field "' + k + '" looks like ' + bad + ' and must not be sent');
-      });
+      assert.strictEqual(allowed[k], 1,
+        'field "' + k + '" is not on the allowlist and must not be sent');
     });
-    // Values too -- a label could smuggle one in.
+    // Values too -- an allowed label could still smuggle something in.
     var blob = JSON.stringify(s.body).toLowerCase();
     assert.ok(blob.indexOf('salra') === -1, 'no VIN prefix may appear');
     assert.ok(blob.indexOf('@') === -1, 'no email may appear');
+    assert.ok(!/\d{2}\.\d{4,}/.test(blob), 'nothing coordinate-shaped may appear');
   });
 });
 
