@@ -896,8 +896,17 @@
       return;
     }
     if (state === 'failed' || state === 'aborted' || state === 'cancelled') {
+      var reason = String(lastStatus.failureReason || '') + ' ' +
+                   String(lastStatus.failureDescription || '');
+      // JLR reports a car that never answered as Failed/"timeout". That is NOT
+      // the same as a refusal, and conflating them tells the user the wrong
+      // thing: "declined" means retrying is pointless, while a timeout usually
+      // just means the car was asleep or out of signal and retrying is exactly
+      // what they should do. Seen live: a lock reported
+      // "Car declined: timeout" alongside "Retrying won't help right now".
+      var timedOut = /timeout|timed out|no ?response|not ?reachable/i.test(reason);
       callback(null, {
-        outcome: 'declined',
+        outcome: timedOut ? 'pending' : 'declined',
         status: lastStatus,
         failureReason: lastStatus.failureReason || null,
         failureDescription: lastStatus.failureDescription || null

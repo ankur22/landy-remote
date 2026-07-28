@@ -12,6 +12,12 @@ static TextLayer *s_hint_layer;
 
 static void prv_select_click_handler(ClickRecognizerRef recognizer, void *context) {
   comm_send_cmd(CMD_UNLOCK);
+  // Take this window off the stack BEFORE pushing the result window. Once the
+  // user has confirmed, the question has been answered -- leaving it beneath
+  // means BACK from the result drops them onto "Unlock car?" again, as if the
+  // unlock had not happened. Lock has no confirm step, which is why only
+  // unlock showed the problem.
+  window_stack_remove(s_window, false);
   command_window_push(CMD_UNLOCK, "Unlocking...");
 }
 

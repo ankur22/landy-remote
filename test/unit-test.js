@@ -416,3 +416,50 @@ testMaskVinPure();
 testMotionGating();
 testLogoutClearsEverything();
 testConnectFlow();
+
+// ---------------------------------------------------------------------------
+// JLR reports a car that never answered as Failed with failureReason
+// "timeout". Treating that as "declined" told the user "Retrying won't help
+// right now" for a command a retry is exactly the right response to. Observed
+// live on the owner's vehicle 2026-07-28.
+//
+// Driven through _pollService directly rather than the canned-response queue:
+// the terminal branch needs no network at all, and the queue is shared with
+// the async tests above, so borrowing it made all three flaky.
+// ---------------------------------------------------------------------------
+function testFailureClassification() {
+  var client = new JLR.Client();
+
+  function outcomeFor(lastStatus) {
+    var captured = null;
+    client._pollService('SALGA2FE8JA123456', 'csid-x', lastStatus, 0,
+      function (err, result) { captured = result; });
+    return captured;
+  }
+
+  check('a Failed/"timeout" is reported as pending, not declined', function () {
+    var r = outcomeFor({ status: 'Failed', failureReason: 'timeout' });
+    assert.strictEqual(r.outcome, 'pending');
+  });
+
+  check('a timeout in failureDescription is caught too', function () {
+    var r = outcomeFor({ status: 'Failed', failureDescription: 'Timed out waiting for vehicle' });
+    assert.strictEqual(r.outcome, 'pending');
+  });
+
+  check('an actual refusal is still reported as declined', function () {
+    var r = outcomeFor({
+      status: 'Failed',
+      failureReason: 'NegativeAcknowledge',
+      failureDescription: 'conflictWithOnboardChange'
+    });
+    assert.strictEqual(r.outcome, 'declined');
+    assert.strictEqual(r.failureDescription, 'conflictWithOnboardChange');
+  });
+
+  check('a plain success is unaffected', function () {
+    assert.strictEqual(outcomeFor({ status: 'Successful' }).outcome, 'success');
+  });
+}
+
+testFailureClassification();

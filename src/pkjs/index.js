@@ -158,17 +158,30 @@ function tempUnitIsF() {
 // than assumed from one car.
 function tyreKpa(raw) {
   var n = parseFloat(raw);
-  if (isNaN(n) || n <= 0) {
-    log('tyre: raw=' + JSON.stringify(raw) + ' is not a positive number');
+  if (isNaN(n) || n <= 0) return -1;
+
+  // Sentinels first, before any rescaling. The vehicle reports 32767
+  // (INT16_MAX) for "no TPMS reading available" -- observed live on the
+  // owner's car once the tyre sensors had not reported for a while. Rescaling
+  // it produces 3276.7 kPa, which then renders as a confident "32.8 bar".
+  if (n === 32767 || n === 65535 || n === 255) {
+    log('tyre: raw=' + n + ' is a no-data sentinel');
     return -1;
   }
-  // Only normalisation, no plausibility clamp. The raw scale genuinely differs
-  // by model generation (plain kPa on this Discovery, kPa*10 on an L405), so
-  // rescaling is necessary -- but the clamp I added on top of it was inferred
-  // from another project's comment about other vehicles, and rejecting a real
-  // reading shows "--" for a pressure the car reported perfectly well. Trust
-  // the vehicle; it knows its own tyres better than a guessed range does.
+
+  // The raw scale differs by model generation: plain kPa on this Discovery,
+  // kPa*10 on an L405/L663. Real pressures sit around 180-350 kPa, so anything
+  // above 1000 must be the *10 scale.
   if (n > 1000) n = n / 10;
+
+  // Plausibility bound. I removed this once, believing it was rejecting good
+  // readings -- it was not; the car was sending 32767 and "--" was the correct
+  // display. Showing a fabricated pressure is worse than showing nothing: a
+  // driver may act on it.
+  if (n < 50 || n > 700) {
+    log('tyre: raw=' + raw + ' normalised=' + n + ' outside 50-700 kPa, treating as no data');
+    return -1;
+  }
   return n;
 }
 
@@ -501,7 +514,12 @@ function prv_send_command(client, cmd, serviceCode, climateTempC10) {
       dict['CMD_MESSAGE'] = 'Car declined: ' + (result.failureDescription || result.failureReason || 'unknown reason');
     } else {
       dict['CMD_OUTCOME'] = 3;
-      dict['CMD_MESSAGE'] = 'No response - car may be asleep. Try again.';
+      // Covers both "we ran out of poll budget" and "JLR reported a timeout".
+      // Either way the car did not answer, and a retry is reasonable -- which
+      // is the opposite of what "declined" implies.
+      dict['CMD_MESSAGE'] = (result && (result.failureReason || result.failureDescription)) ?
+        'Car did not respond in time. It may be asleep - try again.' :
+        'No response - car may be asleep. Try again.';
     }
     log('command ' + cmd + ' outcome=' + dict['CMD_OUTCOME'] +
         ' msg="' + dict['CMD_MESSAGE'] + '"');
