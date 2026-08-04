@@ -28,8 +28,10 @@
   // opening the app feel broken.
   var DERIVE_INTERVAL_MS = 3000;
   var PHONE_FIX_TIMEOUT_MS = 10000;
-  // Whole operation: initial fix + two intervals + two settled fixes.
-  var PHONE_READING_BUDGET_MS = 35000;
+  // One fix, so the budget is just the fix timeout plus a little slack. It was
+  // 35s when this took three fixes six seconds apart -- which is most of why a
+  // status refresh used to take the best part of ten seconds.
+  var PHONE_READING_BUDGET_MS = 12000;
   // Two stationary fixes still wander. Below this displacement we cannot
   // distinguish movement from noise, so we call it stationary.
   //
@@ -101,17 +103,7 @@
     return null;
   }
 
-  function unsafeMotion(reason, base) {
-    var reasons = (base && base.reasons) ? base.reasons.slice(0) : [];
-    reasons.push(reason);
-    return {
-      moving: true,
-      commandsAllowed: false,
-      reasons: reasons,
-      statusAgeSeconds: base ? base.statusAgeSeconds : null,
-      unknown: true
-    };
-  }
+
 
   function normalizedReadError(cause, fallbackCode, message) {
     var detail = cause && cause.message ? String(cause.message).toLowerCase() : '';
@@ -170,185 +162,79 @@
     return null;
   }
 
+  // Read the phone's speed. ONE fix, and a failure is not fatal.
+  //
+  // This replaced a much larger routine: three fixes six seconds apart, a
+  // displacement calculation, accuracy bounds, clock-skew tolerance and an
+  // implausible-speed check. Every piece of that was added to fix something
+  // real, but the aggregate had nine ways to fail and one way to succeed --
+  // and each failure locked the user out of their own car. Observed stuck on
+  // "Checking safety" both indoors and outdoors.
+  //
+  // The rule is now: a speed we can trust is used; anything else means we
+  // simply do not know, and not knowing is no longer treated as motion. See
+  // motionState() -- only POSITIVE evidence of movement blocks a command.
+  //
+  // Note iOS reports coords.speed = -1 when Core Location has no valid speed,
+  // which is the normal case standing still. Under the old rules that was the
+  // trigger for the whole three-fix dance; now it just means "unknown".
   function phoneReading(geolocation, timers, currentTime, clock, callback) {
     if (!geolocation || typeof geolocation.getCurrentPosition !== 'function') {
-      callback(typedError('motion_unknown', 'Phone location is unavailable.'));
+      callback(null, null);            // unknown, not an error
       return;
     }
     var settled = false;
     var timerId = null;
-    function finish(err, value) {
+
+    function finish(value) {
       if (settled) return;
       settled = true;
       if (timerId !== null && timers && typeof timers.clearTimeout === 'function') {
         timers.clearTimeout(timerId);
       }
-      callback(err, value);
+      callback(null, value);
     }
 
-    function getFix(onFix, onFail) {
-      try {
-        geolocation.getCurrentPosition(onFix, onFail, {
-          enableHighAccuracy: true,
-          maximumAge: 0,
-          timeout: PHONE_FIX_TIMEOUT_MS
-        });
-      } catch (err) {
-        if (settled) throw err;
-        onFail(err);
-      }
-    }
+    timerId = timers.setTimeout(function () {
+      finish(null);                    // slow fix -> unknown, not blocked
+    }, PHONE_READING_BUDGET_MS);
 
-    function failure(err) {
-      finish(typedError('motion_unknown', 'Phone location could not be read.', err));
-    }
-
-    // ---- second stage: derive speed from displacement between two fixes ----
-    //
-    // Reached only when the OS declines to report a speed. iOS returns
-    // coords.speed = -1 whenever Core Location has no valid speed measurement,
-    // and that is the NORMAL case when the phone is sitting still -- which is
-    // precisely when someone wants to use this app. Treating it as
-    // motion-unknown made the app permanently unusable next to a parked car
-    // (observed on a real iPhone, 2026-07-28).
-    //
-    // We do NOT solve that by assuming -1 means stationary. That would be an
-    // assumption about an OS implementation detail on the one code path that
-    // must never be wrong, and -1 also occurs on a cold first fix while
-    // genuinely moving. Instead we measure it ourselves: take a second fix a
-    // few seconds later and derive speed from the displacement. That keeps the
-    // rule intact -- the gate still opens only on positive evidence of being
-    // stationary, just evidence we computed rather than evidence we were given.
-    // Takes TWO further fixes and measures between those, deliberately
-    // discarding the fix that got us here. getCurrentPosition typically
-    // answers the first call from a coarse network/cell source and only
-    // switches to GPS once it has settled; measuring from that first fix
-    // reports the jump between sources as movement (10,495 km/h, seen on real
-    // hardware). Ignoring it costs one extra interval and removes the whole
-    // class of error.
-    function deriveFromFurtherFixes() {
-      timers.setTimeout(function () {
-        if (settled) return;
-        getFix(function (fixA) {
-          var aNow = nowMsLocal();
-          var aReason = checkFix(fixA, aNow, aNow);
-          if (aReason) {
-            finish(typedError('motion_unknown',
-              'Phone speed is unavailable: settling fix rejected (' + aReason + ')'));
-            return;
-          }
-          var firstTs = fixTimeMs(fixA, aNow).ms;
-          var first = fixA.coords;
-          timers.setTimeout(function () {
-            if (settled) return;
-            getFix(function (second) {
-          var secondNow = nowMsLocal();
-          var reason = checkFix(second, secondNow, secondNow);
-          if (reason) {
-            finish(typedError('motion_unknown',
-              'Phone speed is unavailable: second fix rejected (' + reason + ')'));
-            return;
-          }
-          var c1 = first, c2 = second.coords;
-          var secondTs = fixTimeMs(second, secondNow).ms;
-          var dtMs = secondTs - firstTs;
-          if (!isNumber(dtMs) || dtMs <= 0) {
-            // No usable elapsed time from the fixes themselves -- happens when
-            // BOTH fall back to receipt time on a platform that sends no
-            // timestamps. We still know how long we waited, because we chose
-            // the interval, so use that rather than refusing. Failing here
-            // would strand exactly the devices the fallback exists to support.
-            dtMs = DERIVE_INTERVAL_MS;
-          }
-          var moved = distanceM(c1, c2);
-          // Accuracy-aware noise floor: two stationary fixes still wander by
-          // roughly their combined reported accuracy, so anything inside that
-          // is indistinguishable from standing still.
-          var acc1 = isNumber(c1.accuracy) ? c1.accuracy : DERIVE_ASSUMED_ACCURACY_M;
-          var acc2 = isNumber(c2.accuracy) ? c2.accuracy : DERIVE_ASSUMED_ACCURACY_M;
-          if (acc1 > DERIVE_MAX_ACCURACY_M || acc2 > DERIVE_MAX_ACCURACY_M) {
-            finish(typedError('motion_unknown',
-              'Phone speed is unavailable: fix too imprecise to derive speed (' +
-              Math.round(Math.max(acc1, acc2)) + 'm)'));
-            return;
-          }
-          var noiseFloorM = Math.max(DERIVE_MIN_NOISE_M, acc1 + acc2);
-          var derived = moved <= noiseFloorM ? 0 : (moved / (dtMs / 1000));
-
-          // Diagnostics for a path only observable on real hardware. No
-          // coordinates -- just the derived quantities.
-          var diag = 'moved=' + Math.round(moved) + 'm dt=' + dtMs +
-            'ms acc1=' + (isNumber(c1.accuracy) ? Math.round(c1.accuracy) : 'absent') +
-            ' acc2=' + (isNumber(c2.accuracy) ? Math.round(c2.accuracy) : 'absent') +
-            ' derived=' + Math.round(derived * 3.6) + 'km/h';
-
-          // A car cannot do this. A derived figure above it means the two fixes
-          // came from DIFFERENT SOURCES -- typically a coarse network/cell fix
-          // first, then GPS once it settles -- so the "displacement" is the
-          // jump between sources, not movement. Observed on real hardware:
-          // 10,495 km/h. Reporting that as speed would be false, and reporting
-          // it as "moving" would be false for the same reason, so this is
-          // unknown: we genuinely cannot tell, and unknown fails closed.
-          if (derived > DERIVE_IMPLAUSIBLE_MS) {
-            finish(typedError('motion_unknown',
-              'Phone speed is unavailable: fixes inconsistent, likely still ' +
-              'acquiring GPS (' + diag + ')'));
-            return;
-          }
-          finish(null, {
-            diag: diag,
-            latitude: c2.latitude,
-            longitude: c2.longitude,
-            speed: derived,
-            timestamp: secondTs,
-            units: 'ms',
-            derived: true
+    try {
+      geolocation.getCurrentPosition(function (position) {
+        var coords = position && position.coords;
+        if (!coords || !isNumber(coords.latitude) || !isNumber(coords.longitude)) {
+          finish(null);
+          return;
+        }
+        if (!isNumber(coords.speed) || coords.speed < 0) {
+          // No usable speed. We still know WHERE the phone is, which
+          // find-my-car needs, so return the position with speed unknown.
+          finish({
+            latitude: coords.latitude,
+            longitude: coords.longitude,
+            speed: null,
+            units: 'ms'
           });
-            }, failure);
-          }, DERIVE_INTERVAL_MS);
-        }, failure);
-      }, DERIVE_INTERVAL_MS);
-    }
-
-    function nowMsLocal() {
-      // currentTime was sampled by the caller before the first fix; the second
-      // fix arrives seconds later, so re-sample rather than ageing it out
-      // falsely. Uses the INJECTED clock -- reaching for Date directly here
-      // would make the second fix look impossibly stale under a fixed test
-      // clock, and silently diverge from the clock everything else uses.
-      return nowMs(clock);
-    }
-
-    function success(position) {
-      var receiptNow = nowMs(clock);
-      var reason = checkFix(position, currentTime, receiptNow);
-      if (reason) {
-        // Deliberately never logs latitude/longitude -- only whether they were
-        // present -- so diagnostics cannot leak a location.
-        finish(typedError('motion_unknown', 'Phone speed is unavailable: ' + reason));
-        return;
-      }
-      var coords = position.coords;
-      if (isNumber(coords.speed) && coords.speed >= 0) {
-        finish(null, {                       // fast path: the OS told us
+          return;
+        }
+        finish({
           latitude: coords.latitude,
           longitude: coords.longitude,
           speed: coords.speed,
-          timestamp: fixTimeMs(position, receiptNow).ms,
           units: 'ms'
         });
-        return;
-      }
-      deriveFromFurtherFixes();
+      }, function () {
+        finish(null);                  // denied or unavailable -> unknown
+      }, {
+        enableHighAccuracy: true,
+        maximumAge: PHONE_FIX_MAX_AGE_MS,
+        timeout: PHONE_FIX_TIMEOUT_MS
+      });
+    } catch (err) {
+      finish(null);
     }
-
-    // Overall budget covers both fixes plus the interval between them.
-    timerId = timers.setTimeout(function () {
-      finish(typedError('motion_unknown', 'Phone location timed out.'));
-    }, PHONE_READING_BUDGET_MS);
-
-    getFix(success, failure);
   }
+
 
   function toRad(degrees) { return degrees * Math.PI / 180; }
   function toDeg(radians) { return radians * 180 / Math.PI; }
@@ -470,8 +356,11 @@
   RealClient.prototype._readError = function (vin, code, message, cause, callback) {
     var cached = this._cachedBundle(vin);
     if (cached) {
+      // Serving cached data is a reason to label it stale, not a reason to
+      // refuse commands: the cache is at most BUNDLE_REUSE_MS old, and the
+      // motion assessment in it was made from the same signals we would use
+      // now.
       cached.cached = true;
-      cached.motion = unsafeMotion('live motion unknown (cached data)', cached.motion);
       callback(null, cached);
       return;
     }
@@ -502,17 +391,16 @@
             }
             phoneReading(self._geolocation, self._timers, nowMs(self._clock), self._clock,
               function (phoneErr, phone) {
+              // A missing or speed-less phone fix no longer blocks anything.
+              // motionState only reports motion on POSITIVE evidence, so an
+              // unreadable phone simply leaves the car's own speed as the only
+              // signal. Previously this branch forced moving=true and locked
+              // the user out of a parked car whenever GPS was unavailable.
               var motion = self._jlr.motionState(status, position, phone);
-              if (phoneErr) {
-                // Carry the actual cause through. Collapsing every phone-read
-                // failure to a fixed string makes a denied permission, a
-                // timeout, a stale fix and a missing speed field all look
-                // identical in the log -- and they need completely different
-                // fixes. phoneErr.message already names which check failed.
-                motion = unsafeMotion(
-                  'live motion unknown: ' +
-                    ((phoneErr && phoneErr.message) || 'no detail'),
-                  motion);
+              motion.speedVerified = !!(phone && isNumber(phone.speed));
+              if (!motion.speedVerified) {
+                motion.reasons = (motion.reasons || []).concat(
+                  ['phone speed unavailable (not treated as motion)']);
               }
               var bundle = {
                 vin: vin,

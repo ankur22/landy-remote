@@ -142,7 +142,10 @@ test('getBundle selects the persisted vehicle and performs reads sequentially', 
     assert.deepStrictEqual(setup.calls, [
       'vehicles', 'status:VIN-TWO', 'caps:VIN-TWO',
       'position:VIN-TWO', 'geolocation',
-      'geo-options:{"enableHighAccuracy":true,"maximumAge":0,"timeout":10000}'
+      // maximumAge is 10s, not 0. Forcing a brand-new fix was a major source
+      // of the lockouts: it makes every read wait for a fresh GPS lock. A
+      // ten-second-old fix answers "are you moving" perfectly well.
+      'geo-options:{"enableHighAccuracy":true,"maximumAge":10000,"timeout":10000}'
     ]);
     assert.strictEqual(
       setup.deps.storage.getItem('jlr_real_bundle_VIN-TWO'),
@@ -156,7 +159,13 @@ test('getBundle selects the persisted vehicle and performs reads sequentially', 
   }
 });
 
-test('getBundle fails closed when live phone motion is unknown', function (done) {
+// REVERSED DELIBERATELY. This used to assert that an unreadable phone blocked
+// every command. That rule locked the owner out of a parked car, indoors and
+// outdoors alike, and there were nine ways to trip it. "We cannot measure your
+// speed" is not evidence that you are moving; only positive evidence of motion
+// blocks a command now. The car's own reported speed still does so
+// independently -- see the test below.
+test('an unreadable phone does NOT block commands', function (done) {
   var setup = baseDeps({
     geolocation: {
       getCurrentPosition: function (ok, fail) {
@@ -168,9 +177,34 @@ test('getBundle fails closed when live phone motion is unknown', function (done)
   var client = new Real.RealClient(setup.deps);
   client.getBundle(function (err, bundle) {
     assert.ifError(err);
+    assert.strictEqual(bundle.motion.moving, false);
+    assert.strictEqual(bundle.motion.commandsAllowed, true);
+    assert.strictEqual(bundle.motion.speedVerified, false,
+      'the bundle must still record that the speed was never verified');
+    done();
+  });
+});
+
+// The half that must NOT relax: if the vehicle itself reports speed, commands
+// stay blocked even though the phone said nothing. Someone else may be driving
+// it while the owner's phone sits still.
+test('a moving CAR still blocks commands when the phone is unreadable', function (done) {
+  var setup = baseDeps({
+    geolocation: {
+      getCurrentPosition: function (ok, fail) { fail(new Error('denied')); }
+    }
+  });
+  setup.raw.getPosition = function (vin, cb) {
+    cb(null, {
+      latitude: 51.5033, longitude: -0.1195, speed: 40,
+      positionQuality: 'GOOD', timestamp: '2026-07-28T09:59:00Z'
+    });
+  };
+  var client = new Real.RealClient(setup.deps);
+  client.getBundle(function (err, bundle) {
+    assert.ifError(err);
     assert.strictEqual(bundle.motion.moving, true);
     assert.strictEqual(bundle.motion.commandsAllowed, false);
-    assert.ok(bundle.motion.reasons.join(' ').indexOf('unknown') >= 0);
     done();
   });
 });
@@ -208,19 +242,39 @@ test('sendCommand blocks unavailable services with a typed error', function (don
   });
 });
 
-test('sendCommand blocks unknown motion and never reaches the raw command', function (done) {
+// Also reversed: an unreadable phone lets the command through. What must
+// still be refused is a command sent while something actually reports motion.
+test('sendCommand proceeds when the phone is unreadable but nothing reports motion', function (done) {
   var setup = baseDeps({
     geolocation: {
       getCurrentPosition: function (ok, fail) { fail(new Error('unavailable')); }
     }
   });
   var client = new Real.RealClient(setup.deps);
+  client.sendCommand('RDU', function (err, result) {
+    assert.ifError(err);
+    assert.ok(result, 'the command should have been sent');
+    assert.ok(setup.calls.some(function (x) { return x.indexOf('command:') === 0; }),
+      'the raw command must have been reached');
+    done();
+  });
+});
+
+test('sendCommand still refuses when the vehicle reports motion', function (done) {
+  var setup = baseDeps();
+  setup.raw.getPosition = function (vin, cb) {
+    cb(null, {
+      latitude: 51.5033, longitude: -0.1195, speed: 40,
+      positionQuality: 'GOOD', timestamp: '2026-07-28T09:59:00Z'
+    });
+  };
+  var client = new Real.RealClient(setup.deps);
   client.sendCommand('RDU', function (err) {
-    assert(err);
+    assert(err, 'a moving vehicle must refuse the command');
     assert.strictEqual(err.code, 'motion_unknown');
     assert.strictEqual(setup.calls.some(function (x) {
       return x.indexOf('command:') === 0;
-    }), false);
+    }), false, 'the raw command must never be reached');
     done();
   });
 });
@@ -381,220 +435,82 @@ geoBundle('geolocation exact 5 km/h threshold blocks', {
   assert.strictEqual(bundle.motion.commandsAllowed, false);
 });
 
-geoBundle('geolocation unavailable fails closed', {
+// ---------------------------------------------------------------------------
+// The gate's contract, rewritten 2026-07-28.
+//
+// It used to demand positive proof of stillness from the phone and refuse
+// everything otherwise: three GPS fixes six seconds apart, displacement
+// maths, accuracy bounds, timestamp validation and clock-skew tolerance.
+// Nine ways to fail, one to succeed -- and every failure locked the owner out
+// of a parked car. Observed stuck on "Checking safety" indoors and outdoors
+// alike.
+//
+// Now: only POSITIVE evidence of motion blocks a command. "We could not
+// measure your speed" is not such evidence. The car's own reported speed
+// still blocks independently, because someone else may be driving it.
+// ---------------------------------------------------------------------------
+
+geoBundle('an unavailable geolocation does not block', {
   getCurrentPosition: function (ok, fail) { fail(new Error('unavailable')); }
-}, 0, function (bundle) {
-  assert.strictEqual(bundle.motion.unknown, true);
+}, undefined, function (bundle) {
+  assert.strictEqual(bundle.motion.commandsAllowed, true);
+  assert.strictEqual(bundle.motion.speedVerified, false);
 });
 
-geoBundle('geolocation absent fails closed', null, 0, function (bundle) {
-  assert.strictEqual(bundle.motion.unknown, true);
+geoBundle('an absent geolocation API does not block', null, undefined, function (bundle) {
+  assert.strictEqual(bundle.motion.commandsAllowed, true);
+  assert.strictEqual(bundle.motion.speedVerified, false);
 });
 
-geoBundle('geolocation malformed coordinates fail closed', {
+geoBundle('malformed coordinates do not block', {
   getCurrentPosition: function (ok) { ok(geoPosition(0, undefined, Infinity, 0)); }
-}, 0, function (bundle) {
-  assert.strictEqual(bundle.motion.unknown, true);
+}, undefined, function (bundle) {
+  assert.strictEqual(bundle.motion.commandsAllowed, true);
+  assert.strictEqual(bundle.motion.speedVerified, false);
 });
 
-geoBundle('geolocation stale timestamp fails closed', {
-  getCurrentPosition: function (ok) {
-    ok(geoPosition(0, Date.parse('2026-07-28T09:59:49Z')));
-  }
-}, 0, function (bundle) {
-  assert.strictEqual(bundle.motion.unknown, true);
-});
-
-// A fresh GPS fix can read slightly INTO THE FUTURE relative to Date.now(),
-// because iOS stamps it from the location subsystem rather than the JS clock.
-// Rejecting that outright would strand the user on "Checking safety" with all
-// controls dead for no real reason. Found live: the real-path harness produced
-// a fix a millisecond or two ahead and the gate closed.
-geoBundle('geolocation tolerates a small future-dated fix (clock skew)', {
-  getCurrentPosition: function (ok) {
-    // 500 ms ahead of the reference clock -- plausible skew, must be accepted.
-    ok(geoPosition(0, Date.parse('2026-07-28T10:00:00.500Z')));
-  }
+// iOS reports coords.speed = -1 when Core Location has no valid speed, which
+// is the normal case standing still. This single value is what the entire
+// three-fix derive machinery existed to work around.
+geoBundle('iOS speed=-1 does not block', {
+  getCurrentPosition: function (ok) { ok(geoPosition(-1)); }
 }, undefined, function (bundle) {
   assert.strictEqual(bundle.motion.moving, false);
   assert.strictEqual(bundle.motion.commandsAllowed, true);
+  assert.strictEqual(bundle.motion.speedVerified, false);
 });
 
-// ...but a fix dated far ahead means a clock we cannot trust, so still refuse.
-geoBundle('geolocation still fails closed on a far-future fix', {
+geoBundle('a null speed does not block', {
+  getCurrentPosition: function (ok) { ok(geoPosition(null)); }
+}, undefined, function (bundle) {
+  assert.strictEqual(bundle.motion.commandsAllowed, true);
+});
+
+// An old timestamp is no longer inspected at all: maximumAge on the request
+// already bounds how stale a fix may be, and re-checking it in JS was a
+// second, subtly different rule that could reject what the OS had accepted.
+geoBundle('an old fix timestamp does not block', {
   getCurrentPosition: function (ok) {
-    ok(geoPosition(0, Date.parse('2026-07-28T10:00:30Z')));   // 30s ahead
+    ok(geoPosition(0, Date.parse('2020-01-01T00:00:00Z')));
   }
-}, 0, function (bundle) {
-  assert.strictEqual(bundle.motion.unknown, true);
+}, undefined, function (bundle) {
+  assert.strictEqual(bundle.motion.commandsAllowed, true);
 });
 
-// ---------------------------------------------------------------------------
-// iOS reports coords.speed = -1 (and some platforms null) whenever Core
-// Location has no valid speed measurement -- which is the NORMAL case when the
-// phone is standing still. Observed on a real iPhone 2026-07-28: the app was
-// permanently stuck on "Checking safety" next to a parked car, because the
-// gate treated "no speed reported" as "cannot prove stationary".
-//
-// We now measure it ourselves from two fixes. These tests pin that: a phone
-// that has not moved between fixes opens the gate; one that has moved a long
-// way does not; and anything we cannot measure still fails closed.
-// ---------------------------------------------------------------------------
-
-// The derive path takes THREE fixes: the first is discarded (it is typically a
-// coarse network fix before GPS settles), and the measurement is made between
-// the second and third. So a helper here must model three calls, and the
-// displacement that matters is call 2 -> call 3.
-function twoFixes(speedValue, movedLat, movedLon, accuracy) {
-  var calls = 0;
-  var acc = accuracy === undefined ? 5 : accuracy;
-  return {
-    getCurrentPosition: function (ok) {
-      calls++;
-      // Calls 1 and 2 sit at the base position; call 3 is wherever the test
-      // says, so "moved" tests exercise the measured pair.
-      var lat = calls >= 3 ? movedLat : 51.5008;
-      var lon = calls >= 3 ? movedLon : -0.1225;
-      ok({
-        timestamp: Date.parse('2026-07-28T09:59:5' + Math.min(calls + 4, 9) + 'Z'),
-        coords: { latitude: lat, longitude: lon, speed: speedValue, accuracy: acc }
-      });
-    }
-  };
-}
-
-geoBundle('iOS speed=-1 while stationary derives stationary and OPENS the gate',
-  twoFixes(-1, 51.5008, -0.1225), undefined, function (bundle) {
-    assert.strictEqual(bundle.motion.moving, false);
-    assert.strictEqual(bundle.motion.commandsAllowed, true);
-  });
-
-geoBundle('null speed while stationary also derives stationary',
-  twoFixes(null, 51.5008, -0.1225), undefined, function (bundle) {
-    assert.strictEqual(bundle.motion.moving, false);
-    assert.strictEqual(bundle.motion.commandsAllowed, true);
-  });
-
-// ~250 m in 3 s is roughly 300 km/h -- unambiguously moving. Deliberately well
-// clear of the noise floor so the test asserts the mechanism, not the constant.
-geoBundle('speed=-1 but the phone moved far between fixes stays LOCKED',
-  twoFixes(-1, 51.5030, -0.1225), undefined, function (bundle) {
-    assert.strictEqual(bundle.motion.moving, true);
-    assert.strictEqual(bundle.motion.commandsAllowed, false);
-  });
-
-// Too imprecise to tell movement from noise -> unknown, still fails closed.
-geoBundle('speed=-1 with a very imprecise fix fails closed',
-  twoFixes(-1, 51.5008, -0.1225, 400), undefined, function (bundle) {
-    assert.strictEqual(bundle.motion.unknown, true);
-    assert.strictEqual(bundle.motion.commandsAllowed, false);
-  });
-
-// If the second fix cannot be obtained at all, we have no evidence -> locked.
-geoBundle('speed=-1 with an unreadable second fix fails closed', {
-  getCurrentPosition: (function () {
-    var calls = 0;
-    return function (ok, fail) {
-      calls++;
-      if (calls === 1) {
-        ok({
-          timestamp: Date.parse('2026-07-28T09:59:57Z'),
-          coords: { latitude: 51.5008, longitude: -0.1225, speed: -1, accuracy: 5 }
-        });
-      } else {
-        fail(new Error('location unavailable'));
-      }
-    };
-  })()
+// The half that must NOT relax.
+geoBundle('a real reported speed still blocks', {
+  getCurrentPosition: function (ok) { ok(geoPosition(10)); }
 }, undefined, function (bundle) {
-  assert.strictEqual(bundle.motion.unknown, true);
+  assert.strictEqual(bundle.motion.moving, true);
   assert.strictEqual(bundle.motion.commandsAllowed, false);
+  assert.strictEqual(bundle.motion.speedVerified, true);
 });
 
-// The car's own speed must still veto independently, even when the phone
-// derived "stationary" -- someone else may be driving it.
-geoBundle('derived-stationary phone still blocked when the CAR reports speed',
-  twoFixes(-1, 51.5008, -0.1225), 30, function (bundle) {
-    assert.strictEqual(bundle.motion.moving, true);
-    assert.strictEqual(bundle.motion.commandsAllowed, false);
-  });
-
-// ---------------------------------------------------------------------------
-// The Pebble Core iOS runtime was observed (2026-07-28) returning a fix whose
-// timestamp isNumber() rejects, which stranded the app on "Checking safety"
-// -- a SECOND cause hidden behind the speed=-1 one. Accept the plausible
-// shapes rather than assume the spec's DOMTimeStamp.
-// ---------------------------------------------------------------------------
-function fixWith(timestamp, speed) {
-  var calls = 0;
-  return {
-    getCurrentPosition: function (ok) {
-      calls++;
-      ok({
-        timestamp: timestamp,
-        coords: {
-          latitude: 51.5008,
-          longitude: -0.1225 + (calls === 1 ? 0 : 0.0000001),
-          speed: speed,
-          accuracy: 5
-        }
-      });
-    }
-  };
-}
-
-geoBundle('a Date-object fix timestamp is accepted',
-  fixWith(new Date(Date.parse('2026-07-28T10:00:00Z')), 0), undefined, function (bundle) {
-    assert.strictEqual(bundle.motion.moving, false);
-    assert.strictEqual(bundle.motion.commandsAllowed, true);
-  });
-
-geoBundle('an ISO-string fix timestamp is accepted',
-  fixWith('2026-07-28T10:00:00Z', 0), undefined, function (bundle) {
-    assert.strictEqual(bundle.motion.moving, false);
-    assert.strictEqual(bundle.motion.commandsAllowed, true);
-  });
-
-// No usable timestamp at all: fall back to our own receipt time rather than
-// refuse. maximumAge:0 means the OS was asked not to return a cached fix, and
-// the alternative is an app that never works on such a platform.
-geoBundle('a fix with no usable timestamp falls back to receipt time',
-  fixWith(undefined, 0), undefined, function (bundle) {
-    assert.strictEqual(bundle.motion.moving, false);
-    assert.strictEqual(bundle.motion.commandsAllowed, true);
-  });
-
-// The combination actually seen on the owner's iPhone: no usable timestamp
-// AND speed=-1. Must derive from two fixes and open the gate when stationary.
-geoBundle('no timestamp AND speed=-1 (the real device case) still opens the gate',
-  fixWith(undefined, -1), undefined, function (bundle) {
-    assert.strictEqual(bundle.motion.moving, false);
-    assert.strictEqual(bundle.motion.commandsAllowed, true);
-  });
-
-// Observed on real hardware 2026-07-28: getCurrentPosition answered the first
-// call from a coarse source, giving a derived 10,495 km/h. A car cannot do
-// that, so it means the fixes came from different sources -- report unknown
-// (which fails closed), never "moving at 10495 km/h".
-geoBundle('wildly inconsistent fixes report unknown, not a bogus speed', {
-  getCurrentPosition: (function () {
-    var calls = 0;
-    return function (ok) {
-      calls++;
-      // Third fix ~9 km from the second: impossible in the sample interval.
-      var lat = calls >= 3 ? 51.5808 : 51.5008;
-      ok({
-        timestamp: Date.parse('2026-07-28T09:59:57Z'),
-        coords: { latitude: lat, longitude: -0.1225, speed: -1, accuracy: 5 }
-      });
-    };
-  })()
+geoBundle('a verified stationary phone is recorded as verified', {
+  getCurrentPosition: function (ok) { ok(geoPosition(0)); }
 }, undefined, function (bundle) {
-  assert.strictEqual(bundle.motion.unknown, true);
-  assert.strictEqual(bundle.motion.commandsAllowed, false);
-  // Must not have been reported as a plausible-looking speed.
-  assert.ok(bundle.motion.reasons.join(' ').indexOf('inconsistent') !== -1,
-    'expected an inconsistency reason, got: ' + bundle.motion.reasons.join(' '));
+  assert.strictEqual(bundle.motion.moving, false);
+  assert.strictEqual(bundle.motion.speedVerified, true);
 });
 
 test('geolocation callback-never path uses injected timeout', function (done) {
@@ -603,9 +519,9 @@ test('geolocation callback-never path uses injected timeout', function (done) {
     geolocation: { getCurrentPosition: function () {} },
     timers: {
       setTimeout: function (fn, delay) {
-        // 35s: the budget covers an initial (discarded) fix plus two
-        // intervals and two settled fixes.
-        assert.strictEqual(delay, 35000);
+        // 12s: one fix plus slack. It was 35s when this took three fixes six
+        // seconds apart.
+        assert.strictEqual(delay, 12000);
         timeoutFn = fn;
         return 7;
       },
@@ -615,7 +531,10 @@ test('geolocation callback-never path uses injected timeout', function (done) {
   var client = new Real.RealClient(setup.deps);
   client.getBundle(function (err, bundle) {
     assert.ifError(err);
-    assert.strictEqual(bundle.motion.unknown, true);
+    // A geolocation call that never answers is now a timeout into "unknown",
+    // which permits commands rather than blocking them.
+    assert.strictEqual(bundle.motion.commandsAllowed, true);
+    assert.strictEqual(bundle.motion.speedVerified, false);
     done();
   });
   assert(timeoutFn);
@@ -639,10 +558,12 @@ test('late geolocation callback after timeout is ignored', function (done) {
   client.getBundle(function (err, bundle) {
     callbackCount++;
     assert.ifError(err);
-    assert.strictEqual(bundle.motion.unknown, true);
+    // Timed out before the fix arrived: speed unverified, commands permitted.
+    assert.strictEqual(bundle.motion.speedVerified, false);
+    assert.strictEqual(bundle.motion.commandsAllowed, true);
   });
   timeoutFn();
-  lateOk(geoPosition(0));
+  lateOk(geoPosition(0));   // must be ignored -- the settled guard
   assert.strictEqual(callbackCount, 1);
   done();
 });
@@ -712,22 +633,27 @@ test('find-car preserves poor quality and identifies stale fixes', function (don
   });
 });
 
-test('all supported services are blocked for unknown phone motion', function (done) {
+// Every service must obey the same rule, so a future one cannot quietly get
+// a weaker gate. Checked against a MOVING VEHICLE, which is the condition that
+// still blocks -- an unreadable phone no longer does.
+test('all supported services are blocked while the vehicle reports motion', function (done) {
   var services = ['RDL', 'RDU', 'HBLF', 'VHS', 'REON'];
   function runNext() {
     if (!services.length) { done(); return; }
     var service = services.shift();
-    var setup = baseDeps({
-      geolocation: {
-        getCurrentPosition: function (ok, fail) { fail(new Error('denied')); }
-      }
-    });
+    var setup = baseDeps();
+    setup.raw.getPosition = function (vin, cb) {
+      cb(null, {
+        latitude: 51.5033, longitude: -0.1195, speed: 40,
+        positionQuality: 'GOOD', timestamp: '2026-07-28T09:59:00Z'
+      });
+    };
     new Real.RealClient(setup.deps).sendCommand(service, function (err) {
-      assert(err);
+      assert(err, service + ' must be refused while the vehicle is moving');
       assert.strictEqual(err.code, 'motion_unknown');
       assert.strictEqual(setup.calls.some(function (x) {
         return x.indexOf('command:') === 0;
-      }), false);
+      }), false, service + ' must never reach the raw client');
       runNext();
     });
   }
@@ -780,7 +706,7 @@ test('expired stationary proof is not reused for a command', function (done) {
       getCurrentPosition: function (ok, fail) {
         geoCalls++;
         if (geoCalls === 1) ok(geoPosition(0, current));
-        else fail(new Error('expired proof cannot refresh'));
+        else ok(geoPosition(12, current));   // moving on the refresh
       }
     }
   });
@@ -788,13 +714,13 @@ test('expired stationary proof is not reused for a command', function (done) {
   client.getBundle(function (err) {
     assert.ifError(err);
     current += 10001;
-    client.sendCommand('RDL', function (commandErr) {
-      assert(commandErr);
-      assert.strictEqual(commandErr.code, 'motion_unknown');
-      assert.strictEqual(geoCalls, 2);
-      assert.strictEqual(setup.calls.some(function (x) {
-        return x.indexOf('command:') === 0;
-      }), false);
+    client.sendCommand('RDL', function () {
+      // The property that matters is that a stale assessment is NOT reused:
+      // the command triggers a second, fresh geolocation read. What that read
+      // returns is a separate question -- an unreadable phone no longer
+      // blocks, but it must not be skipped either.
+      assert.strictEqual(geoCalls, 2,
+        'an expired bundle must force a fresh geolocation read');
       done();
     });
   });

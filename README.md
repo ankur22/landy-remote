@@ -33,17 +33,15 @@ are not drawn — the app asks the vehicle what it supports rather than assuming
 
 ## Safety: the app locks down while the vehicle may be moving
 
-If the app cannot positively confirm you are stationary, the controls
-disappear and it says **"Vehicle in motion"** or **"Checking safety"**. Status,
-tyre pressures and find-my-car stay readable — only commands are refused.
+If anything indicates the vehicle is moving, the controls disappear and it
+says **"Vehicle in motion"**. Status, tyre pressures and find-my-car stay
+readable — only commands are refused.
 
-This fails closed. The vehicle's own reported status can be hours stale, so it
-is never treated as proof the car is parked; the live signal is your phone's
-GPS speed. If that speed is unavailable, denied, stale, or indicates movement,
-commands stay blocked. The block lives in the phone layer, not just the UI, so
-a stale screen cannot get a command through.
-
-Expect this if location permission is off, or indoors with a poor fix.
+Only positive evidence of movement blocks a command: your phone reporting
+speed, or the vehicle reporting it. If your phone simply cannot supply a speed
+— no signal, permission off, indoors — that is treated as "unknown", not as
+motion, and the controls stay available. The block lives in the phone layer,
+not just the UI, so a stale screen cannot get a command through.
 
 ## Requirements
 
