@@ -11,6 +11,11 @@ controls.
   indoors or out.
 - Status loads several seconds faster: it no longer waits for three separate
   GPS readings.
+- Lock and unlock now confirm with the car itself. Previously the app could
+  report "no response" for a command the car had actually carried out, and the
+  status card kept showing the old lock state until you forced a refresh.
+- The waiting screen shows how long it has been waiting, rather than sitting
+  silent.
 - Find my car no longer shows a permanent warning colour, and says how old the
   car's reported position is instead of "Fix: unknown".
 - New app icon.
@@ -28,6 +33,9 @@ simplification).
 | Change | Store impact |
 |---|---|
 | Safety gate: only positive evidence of motion blocks | The headline fix — 1.0.0 was unusable when GPS was unavailable |
+| Lock/unlock confirmed from the vehicle after a VHS read | Fixes "no response" for commands that worked, and the stale lock state |
+| Five full vehicle reads per command reduced to two | Less battery, less data, worst case ~90s rather than ~150s |
+| Elapsed-time counter on the waiting screen | A static screen looked like a hang |
 | One GPS fix instead of three | Status is several seconds faster |
 | Find-my-car quality display | Screenshot already retaken and current |
 | New icon (vertical tailgate, taller, bigger wheels) | **Must be re-uploaded — 1.0.0 shipped the old one** |
