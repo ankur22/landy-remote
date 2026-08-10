@@ -367,8 +367,26 @@
     callback(normalizedReadError(cause, code, message));
   };
 
-  RealClient.prototype.getBundle = function (callback) {
+  // Reuse a very recent bundle rather than re-reading everything.
+  //
+  // A single button press used to trigger five full reads -- the bridge's gate
+  // check, sendCommand's own gate check, then the same again around the
+  // confirmation -- each one a status call, a position call and a fresh GPS
+  // acquisition. Within BUNDLE_REUSE_MS none of those can have changed
+  // meaningfully, and the motion assessment in the cached bundle was made from
+  // the same signals a new one would use.
+  //
+  // force:true skips the cache, for the read taken AFTER a VHS where the whole
+  // point is to see what changed.
+  RealClient.prototype.getBundle = function (callback, force) {
     var self = this;
+    if (!force && this._latestBundle) {
+      var reusable = this._cachedBundle(this._latestBundle.vin);
+      if (reusable) {
+        callback(null, reusable);
+        return;
+      }
+    }
     this._selectVehicle(function (selectErr, vin, vehicle) {
       if (selectErr) { callback(selectErr); return; }
       self._raw.getStatus(vin, function (statusErr, status) {

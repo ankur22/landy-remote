@@ -119,6 +119,11 @@
   // still unlocked. Budget generously; a slow success beats a false failure.
   var POLL_ATTEMPTS = 25;   // ~75s
   var POLL_INTERVAL_MS = 3000;
+  // VHS is a housekeeping call: we ask the car to report in, then read the
+  // status it refreshes. Its own job status tells us nothing we act on, so
+  // waiting the full budget for it just doubles the time before the status
+  // card corrects itself. Give up early and read anyway.
+  var VHS_POLL_ATTEMPTS = 5;   // ~15s
 
   // ------------------------------------------------------------------ utils
 
@@ -821,6 +826,7 @@
             callback(null, { outcome: 'success', status: started });
             return;
           }
+          self._pollingService = serviceName;
           self._pollService(vin, serviceId, started, 0, callback);
         });
       });
@@ -918,9 +924,10 @@
       });
       return;
     }
-    if (attempt >= POLL_ATTEMPTS) {
+    var budget = (self._pollingService === 'VHS') ? VHS_POLL_ATTEMPTS : POLL_ATTEMPTS;
+    if (attempt >= budget) {
       log('service ' + serviceId + ' for ' + maskVin(vin) + ' still pending after ' +
-        (POLL_ATTEMPTS * POLL_INTERVAL_MS / 1000) + 's (last state: ' + state + ')');
+        (budget * POLL_INTERVAL_MS / 1000) + 's (last state: ' + state + ')');
       callback(null, { outcome: 'pending', status: lastStatus });
       return;
     }

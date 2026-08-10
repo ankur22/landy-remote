@@ -339,3 +339,65 @@ console.log('bridge climate total: 2 further assertions passed');
 });
 
 console.log('bridge climate parked: 2 further assertions passed');
+
+// ---------------------------------------------------------------------------
+// Confirming a lock/unlock from the vehicle itself.
+//
+// JLR's job-status endpoint often never reaches a terminal state even though
+// the car plainly acted -- the owner reported waiting a long time, the car
+// unlocking, and the app still saying it had no response. Reporting failure
+// for something the car did is the worst outcome available, so after the
+// command we force a VHS read and let the observed door state overrule.
+// ---------------------------------------------------------------------------
+function confirmingClient(outcome, lockedAfter) {
+  var calls = [];
+  return {
+    calls: calls,
+    getBundle: function (cb) {
+      cb(null, {
+        vin: 'VIN', caps: {},
+        status: { DOOR_IS_ALL_DOORS_LOCKED: lockedAfter ? 'TRUE' : 'FALSE' },
+        motion: { moving: false, commandsAllowed: true, reasons: [] }
+      });
+    },
+    getPosition: function (cb) { cb(null, { hasFix: false }); },
+    sendCommand: function (service, cb) {
+      calls.push(service);
+      if (service === 'VHS') { cb(null, { outcome: 'success' }); return; }
+      cb(null, { outcome: outcome });
+    }
+  };
+}
+
+// CMD_UNLOCK = 3. Reported pending, but the car shows unlocked afterwards.
+reset();
+var unlockClient = confirmingClient('pending', false);
+bridge.handleCommand(unlockClient, 3);
+assert.ok(unlockClient.calls.indexOf('VHS') !== -1,
+  'a lock/unlock must force a VHS read, not just re-read the cached status');
+var corrected = sent.filter(function (d) { return d.MSG_TYPE === 2; });
+assert.strictEqual(corrected.length, 2,
+  'the watch should get the pending result and then a correction');
+assert.strictEqual(corrected[0].CMD_OUTCOME, 3, 'first result is pending');
+assert.strictEqual(corrected[1].CMD_OUTCOME, 1, 'corrected to success');
+assert.ok(/confirmed by the car/.test(corrected[1].CMD_MESSAGE));
+
+// A genuine decline must NOT be overwritten: the door state cannot contradict
+// the car having explicitly refused.
+reset();
+var declinedClient = confirmingClient('declined', false);
+bridge.handleCommand(declinedClient, 3);
+var declinedResults = sent.filter(function (d) { return d.MSG_TYPE === 2; });
+assert.strictEqual(declinedResults.length, 1, 'a decline is not corrected');
+assert.strictEqual(declinedResults[0].CMD_OUTCOME, 2);
+
+// Pending AND the state does not match: no correction, the report stands.
+reset();
+var stillLocked = confirmingClient('pending', true);
+bridge.handleCommand(stillLocked, 3);   // unlock, but car still reports locked
+var uncorrected = sent.filter(function (d) { return d.MSG_TYPE === 2; });
+assert.strictEqual(uncorrected.length, 1,
+  'no correction when the observed state does not match the intent');
+assert.strictEqual(uncorrected[0].CMD_OUTCOME, 3);
+
+console.log('bridge confirm: 8 further assertions passed');

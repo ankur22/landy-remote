@@ -468,12 +468,20 @@ function safetyLocked(bundle) {
 
 // ------------------------------------------------------------ CMD handlers
 
-function handleGetStatus(client) {
+function handleGetStatus(client, force) {
   client.getBundle(function (err, bundle) {
     if (err) {
       sendError(userMessageForError(err, 'Could not reach vehicle.'));
       return;
     }
+    sendStatusFromBundle(bundle);
+  }, force);
+}
+
+// Split out so a caller that ALREADY has a fresh bundle can push it without
+// paying for another status, position and GPS read.
+function sendStatusFromBundle(bundle) {
+  {
     var dict = {};
     var locked = safetyLocked(bundle);
     dict['MSG_TYPE'] = MSG_STATUS_UPDATE;
@@ -565,7 +573,7 @@ function handleGetStatus(client) {
         analytics.capability(svc, bundle.caps[svc] || 'unknown');
       });
     }
-  });
+  }
 }
 
 function handleGetPosition(client, motionBlockedCb) {
@@ -638,6 +646,53 @@ function handleCommand(client, cmd, climateTempC10) {
   });
 }
 
+// After a lock or unlock, ask the VEHICLE what state it is actually in and
+// push that to the watch.
+//
+// Two things this fixes. The status card no longer sits on stale cached data
+// until the user forces a refresh. And when JLR's job tracker never reaches a
+// terminal state -- common, and what produces "No response - car may be
+// asleep" after a 75-second wait -- the observed door state can still prove
+// the command worked. Reporting failure for something the car plainly did is
+// the worst outcome available, so we correct it.
+function confirmFromVehicle(client, cmd, reportedOutcome) {
+  if (typeof client.sendCommand !== 'function') {
+    handleGetStatus(client);
+    return;
+  }
+  // VHS is the "ask the vehicle now" service. It needs no PIN, and it is the
+  // only thing that shifts the server-side cache the status read comes from.
+  client.sendCommand('VHS', function () {
+    // Ignore the VHS result itself; what matters is the state it leaves
+    // behind. force:true because this is the one read that MUST bypass the
+    // reuse cache -- seeing what changed is the entire point.
+    client.getBundle(function (err, bundle) {
+      if (err || !bundle) {
+        handleGetStatus(client, true);
+        return;
+      }
+      var locked = (bundle.status || {}).DOOR_IS_ALL_DOORS_LOCKED === 'TRUE';
+      var wanted = (cmd === CMD_LOCK);
+      // Only ever upgrade. If we already told the watch it succeeded, or the
+      // car explicitly declined, leave that alone -- a decline is information
+      // the door state cannot contradict.
+      if (reportedOutcome === 3 && locked === wanted) {
+        var fix = {};
+        fix['MSG_TYPE'] = MSG_CMD_RESULT;
+        fix['CMD_ECHO'] = cmd;
+        fix['CMD_OUTCOME'] = 1;
+        fix['CMD_MESSAGE'] = (cmd === CMD_LOCK) ?
+          'Locked (confirmed by the car).' :
+          'Unlocked (confirmed by the car).';
+        log('command ' + cmd + ' reported pending but the vehicle shows ' +
+            (locked ? 'locked' : 'unlocked') + ' -- correcting to success');
+        sendDict(fix, 'command result (corrected)');
+      }
+      sendStatusFromBundle(bundle);   // already fresh; do not read again
+    }, true);
+  });
+}
+
 function prv_send_command(client, cmd, serviceCode, climateTempC10) {
   var tempC = (typeof climateTempC10 === 'number' && climateTempC10 > 0) ?
     (climateTempC10 / 10) : null;
@@ -678,10 +733,19 @@ function prv_send_command(client, cmd, serviceCode, climateTempC10) {
         clearAssumption(CLIMATE_ON_UNTIL_KEY);
       }
     }
-    // A command that changed vehicle state (or a forced refresh) should be
-    // followed by a fresh status push so the status card doesn't sit on
-    // stale data until the user backs out and back in.
-    if (cmd === CMD_LOCK || cmd === CMD_UNLOCK || cmd === CMD_REFRESH) {
+    // A command that changed vehicle state should be followed by a fresh read.
+    //
+    // A plain status read is NOT enough: JLR serves it from a server-side
+    // cache that can be hours old, so after a successful unlock the card still
+    // said LOCKED until the user hit Force Refresh by hand. VHS asks the
+    // vehicle itself, which is the only thing that actually moves that value.
+    //
+    // This runs after the watch already has its answer, so the extra wait
+    // costs the user nothing -- the card just corrects itself when the truth
+    // arrives.
+    if (cmd === CMD_LOCK || cmd === CMD_UNLOCK) {
+      confirmFromVehicle(client, cmd, dict['CMD_OUTCOME']);
+    } else if (cmd === CMD_REFRESH) {
       handleGetStatus(client);
     }
   }, tempC);
